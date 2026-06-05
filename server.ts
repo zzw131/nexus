@@ -141,9 +141,8 @@ app.use((req, res, next) => {
 // ═══════════════════════════════════════════════════════
 
 // Gateway 基础配置
-// 使用 SSH 反向隧道（阿里云 127.0.0.1:18789 → MacBook Gateway）
-// 比 Tailscale 更可靠，SSH 隧道有 LaunchAgent KeepAlive 保活
-const GATEWAY_HOST = "127.0.0.1";
+// 全走 Tailscale 内网（100.83.118.16 → MacBook Gateway）
+const GATEWAY_HOST = "100.83.118.16";
 const GATEWAY_PORT = 18789;
 const GATEWAY_TOKEN = "0e41fa7f04c5cca00fa7d492e60fdf75769d8fc99cb218f7";
 
@@ -239,49 +238,11 @@ app.use(express.json());
 // 如果 Prisma 连不上或查不到 → 优雅降级，直接返回原始 JSON
 // ─────────────────────────────────────────────────────────────────
 app.get("/api/openclaw/sessions", async (req, res) => {
-  // Step 1: Node 16 兼容方式 → http.request 向 Gateway 拉取原始会话
+  // Step 1: 复用 gatewayInvoke 通用 helper 拉取会话
   let rawPayload: any;
   try {
-    rawPayload = await new Promise<any>((resolve, reject) => {
-      const postData = JSON.stringify({ tool: "sessions_list", args: {} });
-      const hreq = http.request({
-        hostname: "100.83.118.16",
-        port: 18789,
-        path: "/tools/invoke",
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer 0e41fa7f04c5cca00fa7d492e60fdf75769d8fc99cb218f7",
-          "Content-Length": String(Buffer.byteLength(postData)),
-        },
-        timeout: 10000,
-      }, (hres) => {
-        let body = "";
-        hres.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-        hres.on("end", () => {
-          try {
-            const data = JSON.parse(body);
-            if (!data.ok) {
-              reject(new Error(data.error?.message || "Gateway invoke failed"));
-              return;
-            }
-            let result = data.result;
-            // 解包 content[0].text（Gateway 标准格式）
-            if (result?.content?.[0]?.type === "text" && result.content[0].text) {
-              try { result = JSON.parse(result.content[0].text); } catch {}
-            }
-            const sessions = result?.sessions || (Array.isArray(result) ? result : []);
-            resolve(sessions);
-          } catch (e) {
-            reject(new Error("Invalid Gateway response"));
-          }
-        });
-      });
-      hreq.on("error", (err) => reject(err));
-      hreq.on("timeout", () => { hreq.destroy(); reject(new Error("Gateway timeout")); });
-      hreq.write(postData);
-      hreq.end();
-    });
+    const result = await gatewayInvoke("sessions_list", {});
+    rawPayload = result?.sessions || (Array.isArray(result) ? result : []);
   } catch (err: any) {
     console.error("[openclaw/sessions] Gateway unreachable:", err.message);
     return res.status(502).json({ error: "Gateway unreachable: " + err.message });
