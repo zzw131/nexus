@@ -1,10 +1,13 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
-import { createServer as createViteServer } from "vite";
+import http from "http";
+import { PrismaClient } from "@prisma/client";
+
+const prisma = new PrismaClient();
 
 const app = express();
-const PORT = 3000;
+const PORT = parseInt(process.env.PORT || "3210", 10);
 const HISTORY_FILE = path.join(process.cwd(), "history.json");
 const AGENTS_FILE = path.join(process.cwd(), "agents.json");
 
@@ -28,21 +31,39 @@ const DEFAULT_AGENTS = [
     }
   },
   {
-    id: "openclaw",
-    name: "OpenClaw 智能助理",
-    alias: "OpenClaw",
-    emoji: "🌐",
-    color: "#8b5cf6",
-    description: "多智能体协作网关 · 云端模型接入 · 跨 Agent 任务编排",
+    id: "openclaw-main",
+    name: "全局协作牛马",
+    alias: "全局协作牛马",
+    emoji: "🐂",
+    color: "#f59e0b",
+    description: "全局协作秘书 · 多智能体任务调度 · 云端模型接入",
     runtime: "openclaw",
-    model: "gpt-4o",
+    model: "openclaw/main",
     computerId: "cloud",
-    capabilities: ["多模态对话", "知识检索", "Agent 协同", "联网搜索"],
-    active: false,
-    placeholder: true,
+    capabilities: ["多模态对话", "知识检索", "Agent 协同", "任务调度"],
+    active: true,
+    placeholder: false,
     personality: {
-      style: "协作调度",
-      greeting: "OpenClaw 网关待接入。接入后将支持多 Agent 协同编排。",
+      style: "抽象幽默",
+      greeting: "🐂 全局协作牛马已就绪，老板请下令！",
+    }
+  },
+  {
+    id: "openclaw-jianshen",
+    name: "健身教练",
+    alias: "健身教练",
+    emoji: "💪",
+    color: "#ef4444",
+    description: "AI 健身教练 · 训练计划制定 · 饮食追踪管理",
+    runtime: "openclaw",
+    model: "openclaw/jianshen",
+    computerId: "cloud",
+    capabilities: ["训练计划", "饮食管理", "体测分析", "进度追踪"],
+    active: true,
+    placeholder: false,
+    personality: {
+      style: "激励专业",
+      greeting: "💪 健身教练已上线！今天练哪个部位？",
     }
   },
   {
@@ -114,7 +135,220 @@ app.use((req, res, next) => {
   next();
 });
 
+// ═══════════════════════════════════════════════════════
+// Gateway 代理：仅保留 /v1/chat/completions 流式透传
+// Sessions API 改用下方 /api/sessions 显式路由
+// ═══════════════════════════════════════════════════════
+
+// Gateway 基础配置
+// 使用 SSH 反向隧道（阿里云 127.0.0.1:18789 → MacBook Gateway）
+// 比 Tailscale 更可靠，SSH 隧道有 LaunchAgent KeepAlive 保活
+const GATEWAY_HOST = "127.0.0.1";
+const GATEWAY_PORT = 18789;
+const GATEWAY_TOKEN = "0e41fa7f04c5cca00fa7d492e60fdf75769d8fc99cb218f7";
+
+// 通用 helper: 调用 Gateway /tools/invoke，自动解包 content[0].text
+function gatewayInvoke(tool: string, args: Record<string, any> = {}): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const postData = JSON.stringify({ tool, args });
+    const hreq = http.request({
+      hostname: GATEWAY_HOST,
+      port: GATEWAY_PORT,
+      path: "/tools/invoke",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${GATEWAY_TOKEN}`,
+        "Content-Length": Buffer.byteLength(postData),
+      },
+      timeout: 10000,
+    }, (hres) => {
+      let body = "";
+      hres.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      hres.on("end", () => {
+        try {
+          const data = JSON.parse(body);
+          if (!data.ok) {
+            reject(new Error(data.error?.message || "Gateway invoke failed"));
+            return;
+          }
+          // Gateway 工具返回值可能包在 result.content[0].text JSON 字符串中
+          let result = data.result;
+          if (result?.content?.[0]?.type === "text" && result.content[0].text) {
+            try {
+              result = JSON.parse(result.content[0].text);
+            } catch {
+              // 不是 JSON 则保持原样
+            }
+          }
+          resolve(result);
+        } catch (e) {
+          reject(new Error("Invalid Gateway response"));
+        }
+      });
+    });
+    hreq.on("error", (err) => reject(err));
+    hreq.on("timeout", () => { hreq.destroy(); reject(new Error("Gateway timeout")); });
+    hreq.write(postData);
+    hreq.end();
+  });
+}
+
+// ── Sessions API (对接 MacBook OpenClaw Gateway /tools/invoke) ──
+
+// GET /api/sessions — 从 Gateway 拉取真实会话列表
+app.get("/api/sessions", async (req, res) => {
+  try {
+    const args: Record<string, any> = {};
+    if (req.query.agentId) args.agentId = req.query.agentId;
+    const result = await gatewayInvoke("sessions_list", args);
+    // 过滤掉 subagent 和 cron 会话
+    let sessions = result?.sessions || (Array.isArray(result) ? result : []);
+    sessions = sessions.filter((s: any) => {
+      const key = s.key || "";
+      return !key.includes(":subagent:") && !key.includes(":cron:");
+    });
+    res.json(sessions);
+  } catch (err: any) {
+    console.error("Gateway sessions_list error:", err.message);
+    res.status(502).json({ error: "Gateway sessions unreachable: " + (err.message || err) });
+  }
+});
+
+// GET /api/sessions/:sessionKey/history — 拉取指定会话的完整聊天记录
+app.get("/api/sessions/:sessionKey/history", async (req, res) => {
+  try {
+    const { sessionKey } = req.params;
+    if (!sessionKey) return res.status(400).json({ error: "Missing sessionKey" });
+    const result = await gatewayInvoke("sessions_history", {
+      sessionKey: decodeURIComponent(sessionKey),
+    });
+    // sessions_history 返回 { sessionKey, messages: [...] }
+    const messages = result?.messages || (Array.isArray(result) ? result : []);
+    res.json(messages);
+  } catch (err: any) {
+    console.error("Gateway sessions_history error:", err.message);
+    res.status(502).json({ error: "Gateway history unreachable: " + (err.message || err) });
+  }
+});
+
 app.use(express.json());
+
+// ── GET /api/openclaw/sessions ──────────────────────────────────
+// 从 Gateway 拉取原始会话 JSON，尝试用 Prisma customTitle 覆盖
+// 如果 Prisma 连不上或查不到 → 优雅降级，直接返回原始 JSON
+// ─────────────────────────────────────────────────────────────────
+app.get("/api/openclaw/sessions", async (req, res) => {
+  // Step 1: Node 16 兼容方式 → http.request 向 Gateway 拉取原始会话
+  let rawPayload: any;
+  try {
+    rawPayload = await new Promise<any>((resolve, reject) => {
+      const postData = JSON.stringify({ tool: "sessions_list", args: {} });
+      const hreq = http.request({
+        hostname: "100.83.118.16",
+        port: 18789,
+        path: "/tools/invoke",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer 0e41fa7f04c5cca00fa7d492e60fdf75769d8fc99cb218f7",
+          "Content-Length": String(Buffer.byteLength(postData)),
+        },
+        timeout: 10000,
+      }, (hres) => {
+        let body = "";
+        hres.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+        hres.on("end", () => {
+          try {
+            const data = JSON.parse(body);
+            if (!data.ok) {
+              reject(new Error(data.error?.message || "Gateway invoke failed"));
+              return;
+            }
+            let result = data.result;
+            // 解包 content[0].text（Gateway 标准格式）
+            if (result?.content?.[0]?.type === "text" && result.content[0].text) {
+              try { result = JSON.parse(result.content[0].text); } catch {}
+            }
+            const sessions = result?.sessions || (Array.isArray(result) ? result : []);
+            resolve(sessions);
+          } catch (e) {
+            reject(new Error("Invalid Gateway response"));
+          }
+        });
+      });
+      hreq.on("error", (err) => reject(err));
+      hreq.on("timeout", () => { hreq.destroy(); reject(new Error("Gateway timeout")); });
+      hreq.write(postData);
+      hreq.end();
+    });
+  } catch (err: any) {
+    console.error("[openclaw/sessions] Gateway unreachable:", err.message);
+    return res.status(502).json({ error: "Gateway unreachable: " + err.message });
+  }
+
+  // Step 2: 尝试用 Prisma 覆盖 customTitle（失败则降级返回原始数据）
+  try {
+    const sessionIds: string[] = [];
+    for (const s of rawPayload) {
+      const sid = s.key || s.id || "";
+      if (sid) sessionIds.push(sid);
+    }
+
+    if (sessionIds.length > 0) {
+      const dbSessions = await prisma.session.findMany({
+        where: { id: { in: sessionIds } },
+        select: { id: true, customTitle: true },
+      });
+
+      const titleMap = new Map<string, string>();
+      for (const row of dbSessions) {
+        if (row.customTitle) titleMap.set(row.id, row.customTitle);
+      }
+
+      if (titleMap.size > 0) {
+        const enriched = rawPayload.map((s: any) => {
+          const sid = s.key || s.id || "";
+          const customTitle = titleMap.get(sid);
+          if (customTitle) {
+            return { ...s, title: customTitle, customTitle };
+          }
+          return s;
+        });
+        return res.json(enriched);
+      }
+    }
+  } catch (e: any) {
+    // 🛡️ 优雅降级：Prisma 连不上/查不到 → 打印错误，返回原始 JSON
+    console.error("[openclaw/sessions] Prisma overlay failed (graceful degradation):", e.message);
+  }
+
+  // Step 3: 返回原始 Gateway 数据（Prisma 不可用或没有自定义标题时）
+  res.json(rawPayload);
+});
+
+// ── POST /api/openclaw/sessions/rename ─────────────────────────
+// 接收 { sessionId, newTitle }，Prisma upsert 存储自定义标题
+// ─────────────────────────────────────────────────────────────────
+app.post("/api/openclaw/sessions/rename", async (req, res) => {
+  const { sessionId, newTitle } = req.body;
+
+  if (!sessionId || typeof newTitle !== "string") {
+    return res.status(400).json({ error: "Missing sessionId or newTitle" });
+  }
+
+  try {
+    await prisma.session.upsert({
+      where: { id: sessionId },
+      update: { customTitle: newTitle },
+      create: { id: sessionId, customTitle: newTitle },
+    });
+    res.json({ success: true });
+  } catch (e: any) {
+    console.error("[openclaw/sessions/rename] Prisma error:", e.message);
+    res.status(500).json({ error: "Database error: " + e.message });
+  }
+});
 
 // Helper to read history
 function readHistory() {
@@ -138,69 +372,26 @@ function writeHistory(data: any) {
   }
 }
 
-app.get("/api/openclaw/v1/models", (req, res) => {
-  // Mock returning some OpenClaw agents/models
-  res.json({
-    data: [
-      {
-        id: "openclaw-agent-alpha",
-        name: "全局协作牛马",
-        description: "负责跨环境协同调度",
-      },
-      {
-        id: "openclaw-agent-beta",
-        name: "云端架构师",
-        description: "处理深度任务规划",
-      }
-    ]
-  });
-});
+// /api/openclaw/* 已由上方 createProxyMiddleware 代理到 MacBook OpenClaw Gateway
+// 不再需要 mock 路由
 
-app.get("/api/openclaw/sessions", (req, res) => {
-  // Mock returning some OpenClaw sessions
-  res.json([
-    {
-      key: "agent:openclaw-mock-1",
-      label: "云端模型协同测试",
-      updatedAt: new Date().toISOString(),
-      agentId: "openclaw",
-    },
-    {
-      key: "agent:openclaw-mock-2",
-      label: "跨态任务执行实验",
-      updatedAt: new Date(Date.now() - 3600000).toISOString(),
-      agentId: "openclaw",
-    }
-  ]);
-});
-
-app.get("/api/openclaw/sessions/history", (req, res) => {
-  const { sessionKey } = req.query;
-  // Mock returning some history messages
-  res.json([
-    {
-      id: "msg-1",
-      role: "assistant",
-      content: "您好！我是 OpenClaw 智能助理，已加载历史记录，准备为您服务。",
-      timestamp: new Date().toISOString()
-    }
-  ]);
-});
-
-// 0. GET /api/health - Check MacBook reachability
-app.get("/api/health", async (req, res) => {
+// 0. GET /api/health - Check MacBook reachability (Node 16: no fetch, use http.get)
+app.get("/api/health", (_req, res) => {
   const start = Date.now();
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    // Attempt connecting to the MacBook tailscale endpoint
-    await fetch("http://100.83.118.16:8000/v1/models", { signal: controller.signal });
-    clearTimeout(timeout);
-    res.json({ reachable: true, latency: Date.now() - start });
-  } catch (error) {
-    // Return reachable: false in case of failure or timeout
+  const hreq = http.get("http://100.83.118.16:8000/v1/models", { timeout: 2000 }, (hres) => {
+    // Consume response to avoid memory leak, then report reachable
+    hres.resume();
+    hres.on("end", () => {
+      res.json({ reachable: true, latency: Date.now() - start });
+    });
+  });
+  hreq.on("error", () => {
     res.json({ reachable: false, latency: Date.now() - start });
-  }
+  });
+  hreq.on("timeout", () => {
+    hreq.destroy();
+    res.json({ reachable: false, latency: Date.now() - start });
+  });
 });
 
 // 1. GET /api/history - Retrieve all chat sessions
@@ -333,100 +524,170 @@ app.post("/api/actions", (req, res) => {
 // 3. POST /api/chat - SSE Streaming Proxy to the MAC Hermes Agent or OpenClaw
 app.post("/api/chat", async (req, res, next) => {
   try {
-    const { messages, temperature = 0.7, agent_id = "hermes" } = req.body;
+    const { messages, temperature = 0.7, agent_id = "hermes", session_id } = req.body;
 
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "Invalid payload: messages must be an array" });
     }
 
     if (agent_id === "hermes") {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 30000); // 30 second timeout
-
-      // Set SSE Headers
+      // ⚠️ Node 16 无原生 fetch，使用 http.request 替代
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
 
-      try {
-        const response = await fetch("http://100.83.118.16:8000/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": "Bearer 43847f73aa132c3abfa9b076eb1dd7ff56b08e06b651a640"
-          },
-          body: JSON.stringify({
-            messages,
-            model: "hermes-agent",
-            temperature,
-            stream: true
-          }),
-          signal: controller.signal
-        });
-        clearTimeout(timeout);
+      const postData = JSON.stringify({
+        messages,
+        model: "hermes-agent",
+        temperature,
+        stream: true
+      });
 
-        if (!response.ok) {
-          const errorText = await response.text();
-          res.write(`data: ${JSON.stringify({ error: `Backend API error status: ${response.status} - ${errorText}` })}\n\n`);
-          res.end();
+      const hreq = http.request({
+        hostname: "100.83.118.16",
+        port: 8000,
+        path: "/v1/chat/completions",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer 43847f73aa132c3abfa9b076eb1dd7ff56b08e06b651a640",
+          "Content-Length": Buffer.byteLength(postData),
+        },
+        timeout: 30000,
+      }, (hres) => {
+        if (hres.statusCode !== 200) {
+          let errorData = "";
+          hres.on("data", (chunk: Buffer) => { errorData += chunk.toString(); });
+          hres.on("end", () => {
+            res.write(`data: ${JSON.stringify({ error: `Backend API error status: ${hres.statusCode} - ${errorData}` })}\n\n`);
+            res.end();
+          });
           return;
         }
 
-        if (!response.body) {
-          res.write(`data: ${JSON.stringify({ error: "Empty stream body from backend" })}\n\n`);
-          res.end();
-          return;
-        }
-
-        // Pipe/Stream SSE from downstream to original client
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
+        // SSE 流式透传
+        hres.on("data", (chunk: Buffer) => {
           res.write(chunk);
-        }
-        res.end();
-      } catch (error: any) {
-        clearTimeout(timeout);
-        if (error.name === "AbortError") {
-          return next(new Error("Request to MacBook timed out after 30s"));
-        }
-        throw error;
-      }
+        });
 
-    } else if (agent_id === "openclaw") {
-      // Set SSE Headers
+        hres.on("end", () => {
+          res.end();
+        });
+
+        hres.on("error", (err: Error) => {
+          console.error("Hermes stream pipe error:", err);
+          if (!res.writableEnded) res.end();
+        });
+      });
+
+      hreq.on("error", (err: any) => {
+        console.error("Hermes request error:", err.message);
+        if (!res.headersSent) {
+          res.setHeader("Content-Type", "text/event-stream");
+          res.setHeader("Cache-Control", "no-cache");
+        }
+        res.write(`data: ${JSON.stringify({ error: `Could not connect to MacBook Hermes. ${err.message || err}` })}\n\n`);
+        res.end();
+      });
+
+      hreq.on("timeout", () => {
+        hreq.destroy();
+        if (!res.headersSent) {
+          res.setHeader("Content-Type", "text/event-stream");
+          res.setHeader("Cache-Control", "no-cache");
+        }
+        res.write(`data: ${JSON.stringify({ error: "Request to MacBook timed out after 30s" })}\n\n`);
+        res.end();
+      });
+
+      hreq.write(postData);
+      hreq.end();
+
+    } else if (agent_id === "openclaw-main" || agent_id === "openclaw-jianshen") {
+      // ── OpenClaw Gateway SSE 流式代理 (Node 16: http.request) ──
+      // session_id 通过 x-openclaw-session-key header 传递，实现双端漫游
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
-      // TODO: OpenClaw forward pipeline integration pre-wiring
-// ... (rest remains unchanged)
-      // OpenClaw is designed for multi-agent coordination. Once connected, 
-      // queries can be dispatched dynamically to target autonomous agents.
-      // e.g., const response = await fetch("http://localhost:9000/v1/chat/completions", { ... });
-      
-      const simulatedText = `### 🧩 OpenClaw 智能助理 (预留占位接口就绪)\n\n目前您已成功切换至 **OpenClaw 智能网关**。\n\n- **状态**：桥接链路就绪 / 监听中\n- **底层通信说明**：在后端 \`server.ts\` 内，此部分已预留路由转发块。您可以配置 \`OpenClaw\` 的专属本地运行端点，实现多 Agent 联合规划与自主任务流。\n\n*有什么我可以帮您的吗？本消息来自于 OpenClaw 预置流式套接字。*`;
-      
-      // Simulate chunk-by-chunk stream sending to match SSE expectations
-      const words = simulatedText.split(" ");
-      for (const word of words) {
-        const payload = {
-          choices: [
-            {
-              delta: {
-                content: word + " "
-              }
-            }
-          ]
-        };
-        res.write(`data: ${JSON.stringify(payload)}\n\n`);
-        await new Promise((resolve) => setTimeout(resolve, 40));
+
+      const modelMap: Record<string, string> = {
+        "openclaw-main": "openclaw/main",
+        "openclaw-jianshen": "openclaw/jianshen",
+      };
+      const model = modelMap[agent_id] || "openclaw/main";
+
+      const postData = JSON.stringify({
+        messages,
+        model,
+        temperature,
+        stream: true
+      });
+
+      // 构建请求头：session_id 存在时携带 x-openclaw-session-key
+      const reqHeaders: Record<string, string> = {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${GATEWAY_TOKEN}`,
+        "Content-Length": String(Buffer.byteLength(postData)),
+      };
+      if (session_id) {
+        reqHeaders["x-openclaw-session-key"] = session_id;
       }
-      res.write("data: [DONE]\n\n");
-      res.end();
+
+      const oreq = http.request({
+        hostname: GATEWAY_HOST,
+        port: GATEWAY_PORT,
+        path: "/v1/chat/completions",
+        method: "POST",
+        headers: reqHeaders,
+        timeout: 120000,
+      }, (ores) => {
+        if (ores.statusCode !== 200) {
+          let errorData = "";
+          ores.on("data", (chunk: Buffer) => { errorData += chunk.toString(); });
+          ores.on("end", () => {
+            res.write(`data: ${JSON.stringify({ error: `OpenClaw Gateway error ${ores.statusCode}: ${errorData}` })}\n\n`);
+            res.end();
+          });
+          return;
+        }
+
+        // SSE 流式透传
+        ores.on("data", (chunk: Buffer) => {
+          res.write(chunk);
+        });
+
+        ores.on("end", () => {
+          res.end();
+        });
+
+        ores.on("error", (err: Error) => {
+          console.error("OpenClaw stream pipe error:", err);
+          if (!res.writableEnded) res.end();
+        });
+      });
+
+      oreq.on("error", (err: any) => {
+        console.error("OpenClaw request error:", err.message);
+        if (!res.headersSent) {
+          res.setHeader("Content-Type", "text/event-stream");
+          res.setHeader("Cache-Control", "no-cache");
+        }
+        res.write(`data: ${JSON.stringify({ error: `Request to OpenClaw Gateway failed: ${err.message || err}` })}\n\n`);
+        res.end();
+      });
+
+      oreq.on("timeout", () => {
+        oreq.destroy();
+        if (!res.headersSent) {
+          res.setHeader("Content-Type", "text/event-stream");
+          res.setHeader("Cache-Control", "no-cache");
+        }
+        res.write(`data: ${JSON.stringify({ error: "Request to OpenClaw Gateway timed out after 120s" })}\n\n`);
+        res.end();
+      });
+
+      oreq.write(postData);
+      oreq.end();
     } else {
       res.write(`data: ${JSON.stringify({ error: `Unsupported Agent ID: ${agent_id}` })}\n\n`);
       res.end();
@@ -434,12 +695,16 @@ app.post("/api/chat", async (req, res, next) => {
 
   } catch (error: any) {
     console.error("Proxy error:", error);
-    // If the network request fails (e.g., Tailscale VM offline), stream a helpful, detailed diagnostic
-    // rather than crashing, to maintain the superb experience
-    res.write(`data: ${JSON.stringify({
-      error: `Could not connect to the remote MacBook. Details: ${error?.message || error}. Please ensure Tailscale is active and the Mac Hermes Agent is running on http://100.83.118.16:8000.`
-    })}\n\n`);
-    res.end();
+    if (!res.headersSent) {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+    }
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify({
+        error: `Could not connect to the remote MacBook. Details: ${error?.message || error}.`
+      })}\n\n`);
+      res.end();
+    }
   }
 });
 
@@ -453,24 +718,30 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   });
 });
 
-// Configure Vite integration
+// 启动逻辑：优先检查 dist/ 目录，存在则生产模式，否则动态加载 vite dev server
+// 这样不依赖 NODE_ENV，彻底避免 dev 模式下 vite/rollup 原生模块加载失败
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  const distPath = path.join(process.cwd(), "dist");
+
+  if (fs.existsSync(path.join(distPath, "index.html"))) {
+    // 生产模式：直接服务预构建的静态文件
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
+  } else {
+    // 开发模式：动态加载 vite dev server
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
   }
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running at http://localhost:${PORT}`);
+    console.log(`[proxy] /api/openclaw/* → http://100.83.118.16:18789`);
   });
 }
 

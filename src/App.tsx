@@ -101,48 +101,8 @@ export default function App() {
           // clear and replace AGENTS with latest
           for (let key in AGENTS) delete AGENTS[key];
           data.forEach((a: any) => {
-            if (a.runtime !== "openclaw") {
-              AGENTS[a.id] = a;
-            }
+            AGENTS[a.id] = a;
           });
-
-          // Fetch OpenClaw dynamic models
-          try {
-            const clawRes = await fetch("/api/openclaw/v1/models");
-            if (clawRes.ok) {
-              const clawModels = await clawRes.json();
-              const modelsList = clawModels.data || clawModels;
-              if (Array.isArray(modelsList)) {
-                const dynamicAgents = modelsList.map((m: any) => {
-                  const id = m.id || m.model || "openclaw-" + Math.random();
-                  const agent: Agent = {
-                    id: id,
-                    alias: m.name || id,
-                    name: m.name || id,
-                    emoji: "🌌",
-                    color: "#8b5cf6",
-                    description:
-                      m.description || "云端动态拉取的 OpenClaw Agent",
-                    runtime: "openclaw",
-                    model: id,
-                    computerId: "cloud",
-                    capabilities: ["任务协同", "多模态对话"],
-                    active: true,
-                    placeholder: false,
-                    personality: {
-                      style: "协同代理",
-                      greeting: `您好，我是 ${m.name || id}。`, // Dynamic personality greeting
-                    },
-                  };
-                  AGENTS[id] = agent;
-                  return agent;
-                });
-                setOpenclawAgents(dynamicAgents);
-              }
-            }
-          } catch (err) {
-            console.error("Express /api/openclaw/v1/models inaccessible:", err);
-          }
 
           setForceUpdate((p) => p + 1);
         }
@@ -196,59 +156,67 @@ export default function App() {
     }
   }, [sessions, activeSessionId, isGenerating]);
 
-  // Fetch all sessions (both local and OpenClaw)
+  // Fetch all sessions：OpenClaw Agent 从 Gateway 实时拉取（Source of Truth），
+  // Hermes 从本地 history.json 读取
   useEffect(() => {
     const fetchAllSessions = async () => {
       try {
-        // Fetch standard history
+        let allSessions: ChatSession[] = [];
+
+        // ── 1. 本地 Hermes 会话 ──
         const historyRes = await fetch("/api/history");
-        let initialSessions: ChatSession[] = [];
         if (historyRes.ok) {
-          initialSessions = await historyRes.json();
+          const localSessions = await historyRes.json();
+          allSessions = [...localSessions];
         }
 
-        // Fetch OpenClaw sessions
-        const clawRes = await fetch("/api/openclaw/sessions");
-        if (clawRes.ok) {
-          const clawSessions = await clawRes.json();
-          const mappedClawSessions: ChatSession[] = clawSessions.map(
-            (cs: any) => ({
-              id: cs.key,
-              title: cs.label || cs.displayName || "未命名会话",
-              messages: [],
-              createdAt: cs.updatedAt
-                ? new Date(cs.updatedAt).toISOString()
-                : new Date().toISOString(),
-              agentId: cs.agentId || "openclaw",
-            }),
-          );
+        // ── 2. OpenClaw 会话：从 Gateway 100% 实时拉取（不读本地 history.json）──
+        try {
+          const clawRes = await fetch("/api/sessions");
+          if (clawRes.ok) {
+            const clawSessions = await clawRes.json();
+            const mappedClawSessions: ChatSession[] = clawSessions.map(
+              (cs: any) => {
+                // 根据 agentId 映射到前端的 agent_id
+                let frontendAgentId = "openclaw-main";
+                if (cs.agentId === "jianshen") frontendAgentId = "openclaw-jianshen";
 
-          // Merge them
-          initialSessions = [...initialSessions, ...mappedClawSessions];
+                return {
+                  id: cs.key,
+                  title: cs.label || cs.displayName || "未命名会话",
+                  messages: [], // 消息按需实时拉取
+                  createdAt: cs.updatedAt
+                    ? new Date(cs.updatedAt).toISOString()
+                    : new Date().toISOString(),
+                  agentId: frontendAgentId,
+                };
+              },
+            );
+            allSessions = [...allSessions, ...mappedClawSessions];
+          }
+        } catch (clawErr) {
+          console.error("Gateway sessions unreachable:", clawErr);
         }
 
-        // Sort by createdAt descending
-        initialSessions.sort(
+        // ── 3. 排序：最新在前 ──
+        allSessions.sort(
           (a, b) =>
             new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
         );
 
-        if (initialSessions.length > 0) {
-          setSessions(initialSessions);
-          // Only auto-select if we don't have an active session
+        if (allSessions.length > 0) {
+          setSessions(allSessions);
           const activeAgent =
             localStorage.getItem("hermes_current_agent_id") || "hermes";
           const savedActiveId = localStorage.getItem(
             `hermes_active_session_id_${activeAgent}`,
           );
-
           if (
             savedActiveId &&
-            initialSessions.some((s) => s.id === savedActiveId)
+            allSessions.some((s) => s.id === savedActiveId)
           ) {
             setActiveSessionId(savedActiveId);
           } else {
-            // Unset active session if none found
             setActiveSessionId(null);
           }
         }
@@ -260,86 +228,146 @@ export default function App() {
     fetchAllSessions();
   }, [forceUpdate]);
 
-  // Switch Active Dialogue
   const handleSelectSession = async (id: string) => {
     setActiveSessionId(id);
     const selectedSess = sessions.find((s) => s.id === id);
-    if (selectedSess && selectedSess.agentId) {
+    if (!selectedSess) return;
+
+    if (selectedSess.agentId) {
       setCurrentAgentId(selectedSess.agentId);
+    }
 
-      const isRemote =
-        AGENTS[selectedSess.agentId]?.runtime === "openclaw" ||
-        id.startsWith("agent:");
+    // 判断是否为 OpenClaw 远程会话
+    const isRemote =
+      AGENTS[selectedSess.agentId || ""]?.runtime === "openclaw" ||
+      id.startsWith("agent:");
 
-      if (isRemote && selectedSess.messages.length === 0) {
-        try {
-          const res = await fetch(
-            `/api/openclaw/sessions/history?sessionKey=${encodeURIComponent(
-              id,
-            )}`,
+    if (isRemote) {
+      // ✅ 每次点击都实时向 Gateway 拉取最新聊天记录，直接覆盖
+      try {
+        const res = await fetch(
+          `/api/sessions/${encodeURIComponent(id)}/history`,
+        );
+        if (res.ok) {
+          const history = await res.json();
+          const rawMessages = Array.isArray(history) ? history : [];
+          const mappedMessages: Message[] = rawMessages.map(
+            (item: any) => {
+              // Gateway 消息 content 可能是：字符串 / [{type:"text",text:"..."}] 数组 / null / undefined
+              let content = "";
+              const rawContent = item?.content;
+
+              if (typeof rawContent === "string") {
+                // 用户消息：content 通常是纯字符串
+                content = rawContent;
+              } else if (Array.isArray(rawContent) && rawContent.length > 0) {
+                // 助手消息：content 是内容块数组
+                // 优先级：text > thinking（截取前200字）> tool_use 名称
+                const textBlocks = rawContent
+                  .filter((b: any) => b?.type === "text" && b?.text)
+                  .map((b: any) => b.text);
+
+                if (textBlocks.length > 0) {
+                  content = textBlocks.join("\n");
+                } else {
+                  // 无 text 块时，从 thinking 或 toolCall 中提取摘要信息
+                  const thinkingBlocks = rawContent
+                    .filter((b: any) => b?.type === "thinking" && b?.thinking)
+                    .map((b: any) => b.thinking);
+                  if (thinkingBlocks.length > 0) {
+                    const combined = thinkingBlocks.join(" ");
+                    content = combined.length > 200
+                      ? "💭 " + combined.slice(0, 200) + "…"
+                      : "💭 " + combined;
+                  } else {
+                    const toolBlocks = rawContent
+                      .filter((b: any) => b?.type === "toolCall" && b?.name)
+                      .map((b: any) => `🔧 ${b.name}`);
+                    content = toolBlocks.join(", ");
+                  }
+                }
+              }
+
+              // 时间戳处理：Gateway 返回 epoch 毫秒数
+              const ts = item?.timestamp;
+              const timeStr = ts
+                ? new Date(ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
+                : "";
+
+              return {
+                id: item?.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                role: item?.role === "assistant" ? "assistant" : "user",
+                content: content || "",
+                timestamp: timeStr,
+              };
+            },
           );
-          if (res.ok) {
-            const history = await res.json();
-            const mappedMessages: Message[] = history.map((item: any) => ({
-              id: item.id || `msg-${Date.now()}-${Math.random()}`,
-              role: item.role === "assistant" ? "assistant" : "user",
-              content: item.content || item.text || "",
-              timestamp: item.timestamp
-                ? new Date(item.timestamp).toLocaleTimeString()
-                : new Date().toLocaleTimeString(),
-            }));
 
-            setSessions((prev) =>
-              prev.map((s) =>
-                s.id === id ? { ...s, messages: mappedMessages } : s,
-              ),
-            );
-          }
-        } catch (err) {
-          console.error("Failed to fetch session history:", err);
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === id ? { ...s, messages: mappedMessages } : s,
+            ),
+          );
         }
+      } catch (err) {
+        console.error("Failed to fetch session history:", err);
       }
     }
   };
 
-  // Create real session asynchronously
+  // 新建会话：OpenClaw Agent 生成 UUID session key，Hermes 走本地
   const handleCreateSession = async (agentId: string): Promise<void> => {
     return new Promise((resolve) => {
-      setTimeout(() => {
-        const nextId = "session-" + Date.now();
+      setTimeout(async () => {
+        const agent = AGENTS[agentId];
+        const isOpenClaw = agent?.runtime === "openclaw";
+
+        let sessionId: string;
+        if (isOpenClaw) {
+          // OpenClaw: 生成 UUID session key，Gateway 在首条消息时自动创建
+          const uuid = crypto.randomUUID
+            ? crypto.randomUUID()
+            : "nexus-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+          // 格式对齐 Gateway session key: agent:<agent>:nexus:<uuid>
+          const agentKey = agentId === "openclaw-main" ? "main" : agentId.replace("openclaw-", "");
+          sessionId = `agent:${agentKey}:nexus:${uuid}`;
+        } else {
+          sessionId = "session-" + Date.now();
+        }
+
         const newSess: ChatSession = {
-          id: nextId,
+          id: sessionId,
           title: "新对话",
           messages: [],
           createdAt: new Date().toISOString(),
           agentId: agentId,
         };
+
         setSessions((prev) => [newSess, ...prev]);
-        setActiveSessionId(nextId);
+        setActiveSessionId(sessionId);
         setCurrentAgentId(agentId);
         setTimeout(() => inputRef.current?.focus(), 150);
         resolve();
-      }, 600); // Mock network latency
+      }, 300);
     });
+  };
+
+  // 本地会话持久化（仅 Hermes 等本地 Agent，OpenClaw 以 Gateway 为 Source of Truth）
+  const syncLocalSession = async (session: ChatSession) => {
+    try {
+      await fetch("/api/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(session),
+      });
+    } catch (err) {
+      console.error("Failed to sync local session:", err);
+    }
   };
 
   const handleAgentSwitch = (newAgentId: string) => {
     setCurrentAgentId(newAgentId);
     setActiveSessionId(null);
-  };
-
-  const syncSessionToBackend = async (session: ChatSession) => {
-    try {
-      await fetch("/api/history", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(session),
-      });
-    } catch (e) {
-      console.error("Failed to sync session to backend:", e);
-    }
   };
 
   // Active Session context object
@@ -379,7 +407,11 @@ export default function App() {
       prev.map((s) => (s.id === activeSessionId ? updatedSession : s)),
     );
     setInput("");
-    syncSessionToBackend(updatedSession);
+
+    // 本地持久化同步（仅 Hermes 本地会话）
+    if (AGENTS[currentAgentId]?.runtime !== "openclaw") {
+      syncLocalSession(updatedSession);
+    }
 
     // Create a temporary placeholder message for SSE printing output
     const assistantPlaceholderId = "msg-assistant-" + Date.now();
@@ -415,6 +447,8 @@ export default function App() {
             })),
             temperature: 0.7,
             agent_id: currentAgentId,
+            // ✅ session_id 传递给 Gateway，实现双端消息追加到同一会话
+            session_id: activeSessionId,
           }),
         });
       });
@@ -531,7 +565,9 @@ export default function App() {
       setSessions((prev) =>
         prev.map((s) => (s.id === activeSessionId ? finalCompletedSession : s)),
       );
-      syncSessionToBackend(finalCompletedSession);
+      if (AGENTS[currentAgentId]?.runtime !== "openclaw") {
+        syncLocalSession(finalCompletedSession);
+      }
     } catch (err: any) {
       console.error("Dialogue failure:", err);
       // Construct detailed troubleshooting context directly within the conversation window
@@ -558,7 +594,6 @@ export default function App() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.nativeEvent.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmitMessage(e);
@@ -579,7 +614,6 @@ export default function App() {
       <div className="hidden md:flex h-full select-none shrink-0 z-10">
         <Sidebar
           sessions={sessions}
-          setSessions={setSessions}
           activeSessionId={activeSessionId}
           currentAgentId={currentAgentId}
           isDarkMode={isDarkMode}
@@ -763,8 +797,8 @@ export default function App() {
               activeTab === "chat" ? "flex" : "hidden md:flex"
             }`}
           >
-            {currentAgentId === "openclaw" ? (
-              <AgentPlaceholder agentName="OpenClaw 智能助理" />
+            {AGENTS[currentAgentId]?.placeholder ? (
+              <AgentPlaceholder agentName={AGENTS[currentAgentId]?.name || "Agent"} />
             ) : (
               <>
                 {/* Scroll Zone */}

@@ -88,22 +88,40 @@ export const AGENTS: Record<string, Agent> = {
       greeting: "你好，我是 Hermes。本地推理引擎已就绪，随时为你服务。",
     }
   },
-  openclaw: {
-    id: "openclaw",
-    name: "OpenClaw 智能助理",
-    alias: "OpenClaw",
-    emoji: "🌐",
-    color: "#8b5cf6",
-    description: "多智能体协作网关 · 云端模型接入 · 跨 Agent 任务编排",
+  "openclaw-main": {
+    id: "openclaw-main",
+    name: "全局协作牛马",
+    alias: "全局协作牛马",
+    emoji: "🐂",
+    color: "#f59e0b",
+    description: "全局协作秘书 · 多智能体任务调度 · 云端模型接入",
     runtime: "openclaw",
-    model: "gpt-4o",
+    model: "openclaw/main",
     computerId: "cloud",
-    capabilities: ["多模态对话", "知识检索", "Agent 协同", "联网搜索"],
-    active: false,
-    placeholder: true,
+    capabilities: ["多模态对话", "知识检索", "Agent 协同", "任务调度"],
+    active: true,
+    placeholder: false,
     personality: {
-      style: "协作调度",
-      greeting: "OpenClaw 网关待接入。接入后将支持多 Agent 协同编排。",
+      style: "抽象幽默",
+      greeting: "🐂 全局协作牛马已就绪，老板请下令！",
+    }
+  },
+  "openclaw-jianshen": {
+    id: "openclaw-jianshen",
+    name: "健身教练",
+    alias: "健身教练",
+    emoji: "💪",
+    color: "#ef4444",
+    description: "AI 健身教练 · 训练计划制定 · 饮食追踪管理",
+    runtime: "openclaw",
+    model: "openclaw/jianshen",
+    computerId: "cloud",
+    capabilities: ["训练计划", "饮食管理", "体测分析", "进度追踪"],
+    active: true,
+    placeholder: false,
+    personality: {
+      style: "激励专业",
+      greeting: "💪 健身教练已上线！今天练哪个部位？",
     }
   },
   claude: {
