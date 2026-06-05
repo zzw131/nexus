@@ -11,30 +11,6 @@ export interface ChatSession {
   messages: Message[];
   createdAt: string;
   agentId?: string; // which agent this session belongs to
-  sessionKey?: string; // OpenClaw Gateway session key (e.g. agent:main:dashboard:xxx)
-  kind?: string;       // Session kind from Gateway
-  channel?: string;    // Channel from Gateway
-  label?: string;      // Human-readable label from Gateway
-  model?: string;      // Model used
-  totalTokens?: number;
-  estimatedCostUsd?: number;
-  lastMessagePreview?: string;
-  updatedAt?: number;  // Gateway session updatedAt timestamp
-}
-
-export interface OpenClawSession {
-  key: string;
-  agentId: string;
-  kind: string;
-  channel: string;
-  label: string | null;
-  displayName: string | null;
-  status: string | null;
-  updatedAt: number;
-  totalTokens: number;
-  estimatedCostUsd: number;
-  model: string | null;
-  lastMessagePreview: string | null;
 }
 
 export interface HardwareStats {
@@ -51,6 +27,25 @@ export interface ServerAction {
   description: string;
   icon: string;
   command: string;
+}
+
+export interface OpenClawAgent {
+  id: string;
+  name: string;
+}
+
+export interface OpenClawSession {
+  key: string;
+  agentId: string;
+  label: string;
+  displayName: string;
+  channel: string;
+  status: "done" | "running" | "idle";
+  updatedAt: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
+  model: string;
+  kind?: string;
 }
 
 export interface AgentConfig {
@@ -97,18 +92,18 @@ export const AGENTS: Record<string, Agent> = {
     id: "openclaw",
     name: "OpenClaw 智能助理",
     alias: "OpenClaw",
-    emoji: "🐂",
+    emoji: "🌐",
     color: "#8b5cf6",
-    description: "全局协作牛马 · 多智能体协作网关 · 双端同步",
+    description: "多智能体协作网关 · 云端模型接入 · 跨 Agent 任务编排",
     runtime: "openclaw",
-    model: "deepseek-v4-pro",
+    model: "gpt-4o",
     computerId: "cloud",
-    capabilities: ["多模态对话", "知识检索", "Agent 协同", "联网搜索", "双端同步"],
-    active: true,
-    placeholder: false,
+    capabilities: ["多模态对话", "知识检索", "Agent 协同", "联网搜索"],
+    active: false,
+    placeholder: true,
     personality: {
-      style: "抽象幽默，又皮又稳",
-      greeting: "🐂 全局协作牛马已就绪！双端同步在线，随时听候老板调度。",
+      style: "协作调度",
+      greeting: "OpenClaw 网关待接入。接入后将支持多 Agent 协同编排。",
     }
   },
   claude: {

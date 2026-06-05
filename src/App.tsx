@@ -15,7 +15,7 @@ import {
   Clock,
   Sparkles,
   AlertTriangle,
-  X
+  X,
 } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import MarkdownRenderer from "./components/MarkdownRenderer";
@@ -23,10 +23,10 @@ import AgentWizard from "./components/AgentWizard";
 import {
   HardwareTelemetryCard,
   QuickActionsCard,
-  NetworkStatusBar
+  NetworkStatusBar,
 } from "./components/MacTelemetry";
 import { AgentPlaceholder } from "./components/AgentPlaceholder";
-import { Message, ChatSession, OpenClawSession, Agent, AGENTS } from "./types";
+import { Message, ChatSession, Agent, AGENTS } from "./types";
 import { motion, AnimatePresence } from "motion/react";
 import { useRetry } from "./hooks/useRetry";
 
@@ -43,62 +43,22 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<"chat" | "telemetry">("chat");
 
   // Multi-Agent Gateway routing states
-  const [currentAgentId, setCurrentAgentId] = useState<string>("hermes");
+  const [currentAgentId, setCurrentAgentId] = useState<string>(() => {
+    return localStorage.getItem("hermes_current_agent_id") || "hermes";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("hermes_current_agent_id", currentAgentId);
+  }, [currentAgentId]);
   const [isWizardOpen, setIsWizardOpen] = useState<boolean>(false);
+  const [openclawAgents, setOpenclawAgents] = useState<Agent[]>([]);
   const [forceUpdate, setForceUpdate] = useState(0);
   const [networkError, setNetworkError] = useState<string | null>(null);
-  const [showNetworkErrorModal, setShowNetworkErrorModal] = useState<boolean>(false);
-  const [toast, setToast] = useState<{ id: string; message: string } | null>(null);
-  
-  // ── OpenClaw Gateway 实时会话同步状态 ──
-  const [gatewaySessions, setGatewaySessions] = useState<OpenClawSession[]>([]);
-  const [gatewayConnected, setGatewayConnected] = useState(false);
-  const [loadingSessionHistory, setLoadingSessionHistory] = useState(false);
-
-  // ── SSE 连接：实时接收 OpenClaw Gateway 会话列表 ──
-  useEffect(() => {
-    let es: EventSource | null = null;
-    let rt: ReturnType<typeof setTimeout> | null = null;
-
-    function connect() {
-      if (es) { es.close(); es = null; }
-      es = new EventSource("/api/openclaw/sessions/stream");
-      es.addEventListener("init", (e: MessageEvent) => {
-        try {
-          const d = JSON.parse(e.data);
-          if (d.sessions) { setGatewaySessions(d.sessions); setGatewayConnected(true); }
-        } catch (_) {}
-      });
-      es.addEventListener("status", (e: MessageEvent) => {
-        try { setGatewayConnected(!!JSON.parse(e.data).connected); } catch (_) {}
-      });
-      es.onerror = () => {
-        setGatewayConnected(false);
-        es?.close(); es = null;
-        rt = setTimeout(connect, 5000);
-      };
-    }
-    connect();
-    return () => { es?.close(); if (rt) clearTimeout(rt); };
-  }, []);
-
-  // ── 将 Gateway Session 转为 ChatSession 格式 ──
-  const gatewayToChatSession = (gs: OpenClawSession): ChatSession => ({
-    id: gs.key,
-    title: gs.label || gs.displayName || gs.key.split(":").pop() || "Untitled",
-    messages: [],
-    createdAt: new Date(gs.updatedAt || Date.now()).toISOString(),
-    agentId: "openclaw",
-    sessionKey: gs.key,
-    kind: gs.kind,
-    channel: gs.channel,
-    label: gs.label,
-    model: gs.model,
-    totalTokens: gs.totalTokens,
-    estimatedCostUsd: gs.estimatedCostUsd,
-    lastMessagePreview: gs.lastMessagePreview,
-    updatedAt: gs.updatedAt,
-  });
+  const [showNetworkErrorModal, setShowNetworkErrorModal] =
+    useState<boolean>(false);
+  const [toast, setToast] = useState<{ id: string; message: string } | null>(
+    null,
+  );
 
   const { executeWithRetry, isRetrying, retryCount, resetRetry } = useRetry();
 
@@ -109,7 +69,7 @@ export default function App() {
       const timeout = setTimeout(() => controller.abort(), 2000);
       const res = await fetch("/api/health", { signal: controller.signal });
       clearTimeout(timeout);
-      
+
       const data = await res.json();
       if (data.reachable) {
         setNetworkError(null);
@@ -140,8 +100,51 @@ export default function App() {
           const data = await response.json();
           // clear and replace AGENTS with latest
           for (let key in AGENTS) delete AGENTS[key];
-          data.forEach((a: any) => { AGENTS[a.id] = a; });
-          setForceUpdate(p => p + 1);
+          data.forEach((a: any) => {
+            if (a.runtime !== "openclaw") {
+              AGENTS[a.id] = a;
+            }
+          });
+
+          // Fetch OpenClaw dynamic models
+          try {
+            const clawRes = await fetch("/api/openclaw/v1/models");
+            if (clawRes.ok) {
+              const clawModels = await clawRes.json();
+              const modelsList = clawModels.data || clawModels;
+              if (Array.isArray(modelsList)) {
+                const dynamicAgents = modelsList.map((m: any) => {
+                  const id = m.id || m.model || "openclaw-" + Math.random();
+                  const agent: Agent = {
+                    id: id,
+                    alias: m.name || id,
+                    name: m.name || id,
+                    emoji: "🌌",
+                    color: "#8b5cf6",
+                    description:
+                      m.description || "云端动态拉取的 OpenClaw Agent",
+                    runtime: "openclaw",
+                    model: id,
+                    computerId: "cloud",
+                    capabilities: ["任务协同", "多模态对话"],
+                    active: true,
+                    placeholder: false,
+                    personality: {
+                      style: "协同代理",
+                      greeting: `您好，我是 ${m.name || id}。`, // Dynamic personality greeting
+                    },
+                  };
+                  AGENTS[id] = agent;
+                  return agent;
+                });
+                setOpenclawAgents(dynamicAgents);
+              }
+            }
+          } catch (err) {
+            console.error("Express /api/openclaw/v1/models inaccessible:", err);
+          }
+
+          setForceUpdate((p) => p + 1);
         }
       } catch (err) {
         console.error("Express /api/agents inaccessible:", err);
@@ -173,182 +176,170 @@ export default function App() {
     }
   }, [isDarkMode]);
 
-  // Load chat session list - Gateway sessions for OpenClaw, local history for others
-  useEffect(() => {
-    if (currentAgentId === "openclaw") {
-      // Use Gateway sessions for OpenClaw agent
-      const gwChatSessions = gatewaySessions.map(gatewayToChatSession);
-      setSessions(gwChatSessions);
-      
-      const savedActiveId = localStorage.getItem("hermes_active_session_id_openclaw");
-      if (gwChatSessions.length > 0) {
-        if (savedActiveId && gwChatSessions.some((s: any) => s.id === savedActiveId)) {
-          setActiveSessionId(savedActiveId);
-        } else {
-          setActiveSessionId(gwChatSessions[0].id);
-          localStorage.setItem("hermes_active_session_id_openclaw", gwChatSessions[0].id);
-        }
-      } else {
-        setActiveSessionId(null);
-      }
-    } else {
-      // Local history.json for other agents (Hermes, Claude, etc.)
-      async function loadSessions() {
-        try {
-          const response = await fetch(`/api/history?agentId=${currentAgentId}`);
-          if (response.ok) {
-            const data = await response.json();
-            setSessions(data);
-            const savedActiveId = localStorage.getItem(`hermes_active_session_id_${currentAgentId}`);
-            if (data.length > 0) {
-              if (savedActiveId && data.some((s: any) => s.id === savedActiveId)) {
-                setActiveSessionId(savedActiveId);
-              } else {
-                setActiveSessionId(data[0].id);
-                localStorage.setItem(`hermes_active_session_id_${currentAgentId}`, data[0].id);
-              }
-            } else {
-              createSession([], "自动创建的初始会话");
-            }
-          }
-        } catch (err) {
-          console.error("Express /api/history inaccessible. Bootstrapping client fallback:", err);
-          const mockSess: ChatSession = {
-            id: "local-first-run",
-            title: "Hermes 智能代理入门指南",
-            agentId: currentAgentId,
-            messages: [{
-              id: "welcome-1",
-              role: "assistant",
-              content: "### 欢迎使用您的尊享版 Hermes 智能体控制台！\n\n本系统作为一个先进的对端模型，直接在您的目标工作区编译并运行。\n\n- **实时流式响应启用**：通过真实的 HTTP Server-Sent Events (SSE) 代理技术驱动。\n- **精心雕琢的 Bento 仪表盘**：右侧的 Bento 功能区展示了硬件遥测实时数据及快捷操作指令。\n- **今天有什么我可以帮您的？** 欢迎向我提问关于编写代码、系统脚本或者系统架构等指令！",
-              timestamp: new Date().toLocaleTimeString()
-            }],
-            createdAt: new Date().toISOString()
-          };
-          setSessions([mockSess]);
-          setActiveSessionId("local-first-run");
-        }
-      }
-      loadSessions();
-    }
-  }, [currentAgentId, gatewaySessions]);
+  // Initialization handled by fetchAllSessions
 
   // Save selected session back to local storage
   useEffect(() => {
     if (activeSessionId) {
-      localStorage.setItem(`hermes_active_session_id_${currentAgentId}`, activeSessionId);
+      localStorage.setItem(
+        `hermes_active_session_id_${currentAgentId}`,
+        activeSessionId,
+      );
     }
   }, [activeSessionId, currentAgentId]);
 
   // Handle scrolling of chat container
   useEffect(() => {
     if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      chatContainerRef.current.scrollTop =
+        chatContainerRef.current.scrollHeight;
     }
   }, [sessions, activeSessionId, isGenerating]);
 
-  // Helper function to update history with backend Express API
-  const syncSessionToBackend = async (session: ChatSession) => {
-    try {
-      await fetch("/api/history", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(session)
-      });
-    } catch (err) {
-      console.warn("Could not sync session to Express storage:", err);
-    }
-  };
+  // Fetch all sessions (both local and OpenClaw)
+  useEffect(() => {
+    const fetchAllSessions = async () => {
+      try {
+        // Fetch standard history
+        const historyRes = await fetch("/api/history");
+        let initialSessions: ChatSession[] = [];
+        if (historyRes.ok) {
+          initialSessions = await historyRes.json();
+        }
 
-  // Helper to construct a new chat session state
-  const createSession = (initialMessages: Message[] = [], customTitle?: string, specificAgentId?: string) => {
-    const nextId = "session-" + Date.now();
-    const aId = specificAgentId || currentAgentId;
-    const newSess: ChatSession = {
-      id: nextId,
-      title: customTitle || "新对话主题",
-      messages: initialMessages,
-      createdAt: new Date().toISOString(),
-      agentId: aId
+        // Fetch OpenClaw sessions
+        const clawRes = await fetch("/api/openclaw/sessions");
+        if (clawRes.ok) {
+          const clawSessions = await clawRes.json();
+          const mappedClawSessions: ChatSession[] = clawSessions.map(
+            (cs: any) => ({
+              id: cs.key,
+              title: cs.label || cs.displayName || "未命名会话",
+              messages: [],
+              createdAt: cs.updatedAt
+                ? new Date(cs.updatedAt).toISOString()
+                : new Date().toISOString(),
+              agentId: cs.agentId || "openclaw",
+            }),
+          );
+
+          // Merge them
+          initialSessions = [...initialSessions, ...mappedClawSessions];
+        }
+
+        // Sort by createdAt descending
+        initialSessions.sort(
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        );
+
+        if (initialSessions.length > 0) {
+          setSessions(initialSessions);
+          // Only auto-select if we don't have an active session
+          const activeAgent =
+            localStorage.getItem("hermes_current_agent_id") || "hermes";
+          const savedActiveId = localStorage.getItem(
+            `hermes_active_session_id_${activeAgent}`,
+          );
+
+          if (
+            savedActiveId &&
+            initialSessions.some((s) => s.id === savedActiveId)
+          ) {
+            setActiveSessionId(savedActiveId);
+          } else {
+            // Unset active session if none found
+            setActiveSessionId(null);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch sessions:", err);
+      }
     };
 
-    setSessions((prev) => [newSess, ...prev]);
-    setActiveSessionId(nextId);
-    setCurrentAgentId(aId);
-    syncSessionToBackend(newSess);
-    
-    // Auto focus input
-    setTimeout(() => inputRef.current?.focus(), 150);
-  };
+    fetchAllSessions();
+  }, [forceUpdate]);
 
-  const handleAgentSwitch = (newAgentId: string) => {
-    setCurrentAgentId(newAgentId);
-    const agentSessions = sessions.filter((s) => (s.agentId || "hermes") === newAgentId);
-    if (agentSessions.length > 0) {
-      setActiveSessionId(agentSessions[0].id);
-    } else {
-      createSession([], "新对话主题", newAgentId);
-    }
-  };
-
-  // Switch Active Dialogue - loads Gateway session history if needed
+  // Switch Active Dialogue
   const handleSelectSession = async (id: string) => {
     setActiveSessionId(id);
-    const selectedSess = sessions.find(s => s.id === id);
-    if (selectedSess) {
-      if (selectedSess.agentId) setCurrentAgentId(selectedSess.agentId);
-      
-      // If this is a Gateway session without loaded history, fetch it
-      if (selectedSess.sessionKey && selectedSess.messages.length === 0) {
-        setLoadingSessionHistory(true);
+    const selectedSess = sessions.find((s) => s.id === id);
+    if (selectedSess && selectedSess.agentId) {
+      setCurrentAgentId(selectedSess.agentId);
+
+      const isRemote =
+        AGENTS[selectedSess.agentId]?.runtime === "openclaw" ||
+        id.startsWith("agent:");
+
+      if (isRemote && selectedSess.messages.length === 0) {
         try {
-          const res = await fetch(`/api/openclaw/sessions/history?sessionKey=${encodeURIComponent(selectedSess.sessionKey)}&limit=200`);
+          const res = await fetch(
+            `/api/openclaw/sessions/history?sessionKey=${encodeURIComponent(
+              id,
+            )}`,
+          );
           if (res.ok) {
-            const data = await res.json();
-            const msgs: Message[] = (data.messages || []).map((m: any, i: number) => ({
-              id: `gw-${selectedSess.id}-${i}`,
-              role: m.role === "assistant" ? "assistant" : m.role === "user" ? "user" : "assistant",
-              content: m.content || "",
-              timestamp: m.timestamp || "",
+            const history = await res.json();
+            const mappedMessages: Message[] = history.map((item: any) => ({
+              id: item.id || `msg-${Date.now()}-${Math.random()}`,
+              role: item.role === "assistant" ? "assistant" : "user",
+              content: item.content || item.text || "",
+              timestamp: item.timestamp
+                ? new Date(item.timestamp).toLocaleTimeString()
+                : new Date().toLocaleTimeString(),
             }));
-            // Update session with loaded messages
-            setSessions(prev => prev.map(s =>
-              s.id === id ? { ...s, messages: msgs } : s
-            ));
+
+            setSessions((prev) =>
+              prev.map((s) =>
+                s.id === id ? { ...s, messages: mappedMessages } : s,
+              ),
+            );
           }
         } catch (err) {
-          console.error("Failed to load session history:", err);
-        } finally {
-          setLoadingSessionHistory(false);
+          console.error("Failed to fetch session history:", err);
         }
       }
     }
   };
 
-  // Delete Conversation session hook
-  const handleDeleteSession = async (id: string) => {
-    const isCurrentActive = activeSessionId === id;
-    const filtered = sessions.filter((s) => s.id !== id);
-    setSessions(filtered);
-
-    // Sync deletion to back-end REST
-    try {
-      await fetch(`/api/history/${id}`, { method: "DELETE" });
-    } catch (err) {
-      console.error("Backend request failed to delete session:", err);
-    }
-
-    if (filtered.length > 0) {
-      if (isCurrentActive) {
-        setActiveSessionId(filtered[0].id);
-      }
-    } else {
-      createSession([], "自动回收的对话会话");
-    }
+  // Create real session asynchronously
+  const handleCreateSession = async (agentId: string): Promise<void> => {
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        const nextId = "session-" + Date.now();
+        const newSess: ChatSession = {
+          id: nextId,
+          title: "新对话",
+          messages: [],
+          createdAt: new Date().toISOString(),
+          agentId: agentId,
+        };
+        setSessions((prev) => [newSess, ...prev]);
+        setActiveSessionId(nextId);
+        setCurrentAgentId(agentId);
+        setTimeout(() => inputRef.current?.focus(), 150);
+        resolve();
+      }, 600); // Mock network latency
+    });
   };
 
-  const handleNewSessionButton = (agentId?: string) => {
-    createSession([], `对话会话 ${sessions.length + 1}`, agentId);
+  const handleAgentSwitch = (newAgentId: string) => {
+    setCurrentAgentId(newAgentId);
+    setActiveSessionId(null);
+  };
+
+  const syncSessionToBackend = async (session: ChatSession) => {
+    try {
+      await fetch("/api/history", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(session),
+      });
+    } catch (e) {
+      console.error("Failed to sync session to backend:", e);
+    }
   };
 
   // Active Session context object
@@ -357,13 +348,14 @@ export default function App() {
   // Triggering text submission
   const handleSubmitMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isGenerating || !activeSessionId || !activeSession) return;
+    if (!input.trim() || isGenerating || !activeSessionId || !activeSession)
+      return;
 
     const userMessage: Message = {
       id: "msg-user-" + Date.now(),
       role: "user",
       content: input,
-      timestamp: new Date().toLocaleTimeString()
+      timestamp: new Date().toLocaleTimeString(),
     };
 
     // Append to messages list
@@ -379,12 +371,12 @@ export default function App() {
     const updatedSession: ChatSession = {
       ...activeSession,
       title,
-      messages: updatedMessages
+      messages: updatedMessages,
     };
 
     // Update frontend state immediately for blazing fast responsive inputs
     setSessions((prev) =>
-      prev.map((s) => (s.id === activeSessionId ? updatedSession : s))
+      prev.map((s) => (s.id === activeSessionId ? updatedSession : s)),
     );
     setInput("");
     syncSessionToBackend(updatedSession);
@@ -395,16 +387,16 @@ export default function App() {
       id: assistantPlaceholderId,
       role: "assistant",
       content: "",
-      timestamp: new Date().toLocaleTimeString()
+      timestamp: new Date().toLocaleTimeString(),
     };
 
     const finalSessionWithAss = {
       ...updatedSession,
-      messages: [...updatedMessages, assistantPlaceholder]
+      messages: [...updatedMessages, assistantPlaceholder],
     };
 
     setSessions((prev) =>
-      prev.map((s) => (s.id === activeSessionId ? finalSessionWithAss : s))
+      prev.map((s) => (s.id === activeSessionId ? finalSessionWithAss : s)),
     );
 
     setIsGenerating(true);
@@ -417,15 +409,20 @@ export default function App() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            messages: updatedMessages.map(({ role, content }) => ({ role, content })),
+            messages: updatedMessages.map(({ role, content }) => ({
+              role,
+              content,
+            })),
             temperature: 0.7,
-            agent_id: currentAgentId
-          })
+            agent_id: currentAgentId,
+          }),
         });
       });
 
       if (!response.ok) {
-        throw new Error(`Proxy gateway error (HTTP Status: ${response.status})`);
+        throw new Error(
+          `Proxy gateway error (HTTP Status: ${response.status})`,
+        );
       }
 
       const reader = response.body?.getReader();
@@ -470,10 +467,10 @@ export default function App() {
                       messages: s.messages.map((m) =>
                         m.id === assistantPlaceholderId
                           ? { ...m, content: accumulatedText }
-                          : m
-                      )
+                          : m,
+                      ),
                     };
-                  })
+                  }),
                 );
                 continue;
               }
@@ -490,10 +487,10 @@ export default function App() {
                       messages: s.messages.map((m) =>
                         m.id === assistantPlaceholderId
                           ? { ...m, content: accumulatedText }
-                          : m
-                      )
+                          : m,
+                      ),
                     };
-                  })
+                  }),
                 );
               }
             } catch (jsonErr) {
@@ -524,16 +521,17 @@ export default function App() {
           ...updatedMessages,
           {
             ...assistantPlaceholder,
-            content: accumulatedText || "*服务端返回内容为空。请仔细检查您的目标 MacBook 上的其它大模型后台服务是否已正确绑定并就绪于 8000 端口。*"
-          }
-        ]
+            content:
+              accumulatedText ||
+              "*服务端返回内容为空。请仔细检查您的目标 MacBook 上的其它大模型后台服务是否已正确绑定并就绪于 8000 端口。*",
+          },
+        ],
       };
 
       setSessions((prev) =>
-        prev.map((s) => (s.id === activeSessionId ? finalCompletedSession : s))
+        prev.map((s) => (s.id === activeSessionId ? finalCompletedSession : s)),
       );
       syncSessionToBackend(finalCompletedSession);
-
     } catch (err: any) {
       console.error("Dialogue failure:", err);
       // Construct detailed troubleshooting context directly within the conversation window
@@ -547,10 +545,10 @@ export default function App() {
             messages: s.messages.map((m) =>
               m.id === assistantPlaceholderId
                 ? { ...m, content: errorFallbackText }
-                : m
-            )
+                : m,
+            ),
           };
-        })
+        }),
       );
     } finally {
       setIsGenerating(false);
@@ -568,7 +566,9 @@ export default function App() {
   };
 
   return (
-    <div className={`flex h-screen w-full overflow-hidden transition-colors duration-500 bg-[#fbfbfd] dark:bg-[#09090b] text-[#1d1d1f] dark:text-[#f5f5f7] font-sans selection:bg-blue-500/20 relative`}>
+    <div
+      className={`flex h-screen w-full overflow-hidden transition-colors duration-500 bg-[#fbfbfd] dark:bg-[#09090b] text-[#1d1d1f] dark:text-[#f5f5f7] font-sans selection:bg-blue-500/20 relative`}
+    >
       {/* Dynamic blurred organic gradient circles beneath the premium frosted elements */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden opacity-30 dark:opacity-15 z-0 select-none">
         <div className="absolute top-[45%] left-[55%] -translate-x-1/2 w-[45%] h-[45%] rounded-full bg-purple-200 dark:bg-purple-800/20 blur-[110px]" />
@@ -578,18 +578,16 @@ export default function App() {
       {/* 1. Left Sidebar Component */}
       <div className="hidden md:flex h-full select-none shrink-0 z-10">
         <Sidebar
-          key={forceUpdate ? "1" : "0"} // forces Sidebar to re-render when new agent is added
           sessions={sessions}
+          setSessions={setSessions}
           activeSessionId={activeSessionId}
           currentAgentId={currentAgentId}
-          gatewayConnected={gatewayConnected}
-          loadingSessionHistory={loadingSessionHistory}
-          onSelectSession={handleSelectSession}
-          onNewSession={handleNewSessionButton}
-          onDeleteSession={handleDeleteSession}
           isDarkMode={isDarkMode}
+          openclawAgents={openclawAgents}
           onToggleDarkMode={() => setIsDarkMode(!isDarkMode)}
           onAgentSwitch={handleAgentSwitch}
+          onSelectSession={handleSelectSession}
+          onCreateSession={handleCreateSession}
           onOpenWizard={() => setIsWizardOpen(true)}
         />
       </div>
@@ -600,17 +598,28 @@ export default function App() {
         <header className="h-16 flex items-center justify-between px-8 bg-white/30 dark:bg-zinc-950/20 backdrop-blur-md border-b border-zinc-200/50 dark:border-zinc-800/40 z-10 select-none">
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2.5 pl-1">
-              <div 
-                className="flex items-center justify-center w-6 h-6 rounded-md shadow-sm border border-black/5 dark:border-white/5" 
-                style={{ backgroundColor: AGENTS[currentAgentId]?.color + '20', color: AGENTS[currentAgentId]?.color }} // 20 is approx 12% opacity in hex
+              <div
+                className="flex items-center justify-center w-6 h-6 rounded-md shadow-sm border border-black/5 dark:border-white/5"
+                style={{
+                  backgroundColor: AGENTS[currentAgentId]?.color + "20",
+                  color: AGENTS[currentAgentId]?.color,
+                }} // 20 is approx 12% opacity in hex
               >
-                <span className="text-sm leading-none">{AGENTS[currentAgentId]?.emoji}</span>
+                <span className="text-sm leading-none">
+                  {AGENTS[currentAgentId]?.emoji}
+                </span>
               </div>
               <h2 className="text-[14px] font-bold tracking-tight text-zinc-900 dark:text-white font-sans flex items-center gap-2">
-                {AGENTS[currentAgentId]?.name} 
-                <span className="text-zinc-300 dark:text-zinc-700 font-normal">/</span> 
+                {AGENTS[currentAgentId]?.name}
+                <span className="text-zinc-300 dark:text-zinc-700 font-normal">
+                  /
+                </span>
                 <span className="text-[13px] font-medium text-zinc-500 dark:text-zinc-400">
-                   {AGENTS[currentAgentId]?.description?.split('，')[0].split(' · ')[0]}
+                  {
+                    AGENTS[currentAgentId]?.description
+                      ?.split("，")[0]
+                      .split(" · ")[0]
+                  }
                 </span>
               </h2>
               {networkError ? (
@@ -622,7 +631,8 @@ export default function App() {
                   <AlertTriangle className="w-4 h-4" />
                   异常详情
                 </button>
-              ) : AGENTS[currentAgentId]?.active && !AGENTS[currentAgentId]?.placeholder ? (
+              ) : AGENTS[currentAgentId]?.active &&
+                !AGENTS[currentAgentId]?.placeholder ? (
                 <div className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 ml-1 rounded-full text-[10px] font-mono border bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-200/30 dark:border-emerald-900/30 text-emerald-600 dark:text-emerald-400">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
                   在线
@@ -663,17 +673,8 @@ export default function App() {
 
             {/* General latency checker simulation */}
             <div className="flex items-center gap-1.5 text-xs text-zinc-450 dark:text-zinc-500 font-mono">
-              {currentAgentId === "openclaw" ? (
-                <>
-                  <div className={`w-2 h-2 rounded-full ${gatewayConnected ? "bg-emerald-500 animate-pulse" : "bg-rose-500"}`} />
-                  <span>{gatewayConnected ? "🐂 牛马在线" : "Gateway 断连"}</span>
-                </>
-              ) : (
-                <>
-                  <Wifi className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>中转网关在线</span>
-                </>
-              )}
+              <Wifi className="w-3.5 h-3.5 text-emerald-500" />
+              <span>中转网关在线</span>
             </div>
           </div>
         </header>
@@ -702,18 +703,22 @@ export default function App() {
                       <AlertTriangle className="w-5 h-5 text-rose-600 dark:text-rose-400" />
                     </div>
                     <div>
-                      <h3 className="text-base font-bold tracking-tight text-zinc-900 dark:text-white">连接异常</h3>
-                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">多智能体网关通信失败</p>
+                      <h3 className="text-base font-bold tracking-tight text-zinc-900 dark:text-white">
+                        连接异常
+                      </h3>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+                        多智能体网关通信失败
+                      </p>
                     </div>
                   </div>
-                  <button 
+                  <button
                     onClick={() => setShowNetworkErrorModal(false)}
                     className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 dark:hover:bg-zinc-800 dark:hover:text-zinc-300 transition-colors"
                   >
                     <X className="w-4 h-4" />
                   </button>
                 </div>
-                
+
                 <div className="bg-zinc-50 dark:bg-[#121215] border border-zinc-200/50 dark:border-zinc-800 p-4 rounded-xl">
                   <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200 font-mono tracking-tight leading-relaxed">
                     {networkError}
@@ -739,7 +744,9 @@ export default function App() {
                     }}
                     className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold rounded-xl shadow-sm transition-all active:scale-[0.98]"
                   >
-                    <RefreshCw className={`w-4 h-4 ${isRetrying ? 'animate-spin' : ''}`} />
+                    <RefreshCw
+                      className={`w-4 h-4 ${isRetrying ? "animate-spin" : ""}`}
+                    />
                     重新连接
                   </button>
                 </div>
@@ -756,12 +763,8 @@ export default function App() {
               activeTab === "chat" ? "flex" : "hidden md:flex"
             }`}
           >
-            {currentAgentId === 'openclaw' && !gatewayConnected && sessions.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full gap-4 text-zinc-400">
-                <RefreshCw className="w-8 h-8 animate-spin" />
-                <p className="text-sm font-medium">正在连接 OpenClaw Gateway...</p>
-                <p className="text-xs">等待 100.83.118.16:18789 响应</p>
-              </div>
+            {currentAgentId === "openclaw" ? (
+              <AgentPlaceholder agentName="OpenClaw 智能助理" />
             ) : (
               <>
                 {/* Scroll Zone */}
@@ -773,32 +776,40 @@ export default function App() {
                   <div className="p-3.5 rounded-xl bg-amber-50/30 dark:bg-amber-950/5 border border-amber-100/10 dark:border-amber-950/10 text-amber-800 dark:text-amber-400 text-[11px] flex gap-3 leading-relaxed shadow-3xs">
                     <Info className="w-4 h-4 shrink-0 text-amber-500 mt-0.5" />
                     <div className="font-sans font-medium">
-                      <strong>网络接入建议：</strong>本应用程序通过内置的 Tailscale 专用隧道，将智能会话操作直接委托给您的远程 MacBook 宿主机（基于接口地址 <code>100.83.118.16:8000</code>）。如果提示词未正常响应，请务必确认您的本地 Mac 运行守护进程正常工作。
+                      <strong>网络接入建议：</strong>本应用程序通过内置的
+                      Tailscale 专用隧道，将智能会话操作直接委托给您的远程
+                      MacBook 宿主机（基于接口地址{" "}
+                      <code>100.83.118.16:8000</code>
+                      ）。如果提示词未正常响应，请务必确认您的本地 Mac
+                      运行守护进程正常工作。
                     </div>
                   </div>
 
-                  {loadingSessionHistory && activeSession ? (
-                    <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-400">
-                      <RefreshCw className="w-6 h-6 animate-spin text-blue-500" />
-                      <p className="text-sm font-medium">正在加载会话历史...</p>
-                      <p className="text-xs text-zinc-500">{activeSession.title}</p>
-                    </div>
-                  ) : activeSession && activeSession.messages.length === 0 && !loadingSessionHistory ? (
+                  {activeSession && activeSession.messages.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-full max-w-lg mx-auto text-center space-y-5 pt-12 select-none">
-                      <div className="h-14 w-14 rounded-2xl bg-zinc-50/80 dark:bg-zinc-900/80 border border-zinc-200/50 dark:border-zinc-800/50 flex items-center justify-center text-2xl shadow-sm" style={{ borderColor: AGENTS[currentAgentId]?.color }}>
+                      <div
+                        className="h-14 w-14 rounded-2xl bg-zinc-50/80 dark:bg-zinc-900/80 border border-zinc-200/50 dark:border-zinc-800/50 flex items-center justify-center text-2xl shadow-sm"
+                        style={{ borderColor: AGENTS[currentAgentId]?.color }}
+                      >
                         {AGENTS[currentAgentId]?.emoji}
                       </div>
                       <div className="space-y-2">
                         <h3 className="text-sm font-bold text-zinc-800 dark:text-white font-sans tracking-tight flex items-center justify-center gap-2">
                           {AGENTS[currentAgentId]?.name}
-                          {AGENTS[currentAgentId]?.placeholder || !AGENTS[currentAgentId]?.active ? (
-                            <span className="px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500 text-[10px] font-normal tracking-normal border border-zinc-200 dark:border-zinc-700">未接入</span>
+                          {AGENTS[currentAgentId]?.placeholder ||
+                          !AGENTS[currentAgentId]?.active ? (
+                            <span className="px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500 text-[10px] font-normal tracking-normal border border-zinc-200 dark:border-zinc-700">
+                              未接入
+                            </span>
                           ) : (
-                            <span className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 text-[10px] font-normal tracking-normal border border-emerald-200/50 dark:border-emerald-800/50">已就绪</span>
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 text-[10px] font-normal tracking-normal border border-emerald-200/50 dark:border-emerald-800/50">
+                              已就绪
+                            </span>
                           )}
                         </h3>
                         <p className="text-xs text-zinc-500 dark:text-zinc-400 leading-relaxed max-w-md mx-auto">
-                          {AGENTS[currentAgentId]?.placeholder || !AGENTS[currentAgentId]?.active
+                          {AGENTS[currentAgentId]?.placeholder ||
+                          !AGENTS[currentAgentId]?.active
                             ? "该 Agent 尚未接入，请完成配置后开始使用"
                             : AGENTS[currentAgentId]?.personality?.greeting}
                         </p>
@@ -809,7 +820,8 @@ export default function App() {
                       <AnimatePresence initial={false}>
                         {activeSession?.messages.map((msg) => {
                           const isUser = msg.role === "user";
-                          const msgAgent = AGENTS[activeSession?.agentId || "hermes"];
+                          const msgAgent =
+                            AGENTS[activeSession?.agentId || "hermes"];
                           return (
                             <motion.div
                               key={msg.id}
@@ -829,21 +841,36 @@ export default function App() {
                                     : "bg-zinc-50 dark:bg-zinc-900/50 border-zinc-200/50 dark:border-zinc-800/50"
                                 }`}
                               >
-                                {isUser ? <User className="w-3.5 h-3.5 text-zinc-500" /> : <span className="text-base">{msgAgent?.emoji}</span>}
+                                {isUser ? (
+                                  <User className="w-3.5 h-3.5 text-zinc-500" />
+                                ) : (
+                                  <span className="text-base">
+                                    {msgAgent?.emoji}
+                                  </span>
+                                )}
                               </div>
 
                               {/* Content block */}
                               <div className="space-y-1 max-w-[85%]">
                                 <div className="flex items-center gap-2 px-1 text-zinc-400 text-[9px] uppercase tracking-wider font-mono">
                                   <span className="font-bold text-zinc-500 dark:text-zinc-400">
-                                    {isUser ? "本地用户" : `${msgAgent?.emoji} ${msgAgent?.name}`}
+                                    {isUser
+                                      ? "本地用户"
+                                      : `${msgAgent?.emoji} ${msgAgent?.name}`}
                                   </span>
                                   <span>•</span>
                                   <span>{msg.timestamp}</span>
                                 </div>
 
                                 <div
-                                  style={{ borderLeftColor: !isUser ? msgAgent?.color : undefined, borderLeftWidth: !isUser ? '2px' : undefined }}
+                                  style={{
+                                    borderLeftColor: !isUser
+                                      ? msgAgent?.color
+                                      : undefined,
+                                    borderLeftWidth: !isUser
+                                      ? "2px"
+                                      : undefined,
+                                  }}
                                   className={`px-4.5 py-3 rounded-2xl border text-xs leading-relaxed ${
                                     isUser
                                       ? "bg-zinc-50 dark:bg-zinc-900/40 border-zinc-100/30 dark:border-zinc-850/10 text-zinc-800 dark:text-zinc-250 shadow-3xs"
@@ -853,10 +880,21 @@ export default function App() {
                                   <MarkdownRenderer content={msg.content} />
                                   {isGenerating && !msg.content && (
                                     <div className="flex items-center gap-1.5 py-1 text-zinc-400 text-xs font-mono select-none">
-                                      <span className="h-1.5 w-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                                      <span className="h-1.5 w-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                                      <span className="h-1.5 w-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-                                      <span className="ml-1 text-[10px]">正在解析响应 data stream...</span>
+                                      <span
+                                        className="h-1.5 w-1.5 bg-blue-500 rounded-full animate-bounce"
+                                        style={{ animationDelay: "0ms" }}
+                                      />
+                                      <span
+                                        className="h-1.5 w-1.5 bg-blue-500 rounded-full animate-bounce"
+                                        style={{ animationDelay: "150ms" }}
+                                      />
+                                      <span
+                                        className="h-1.5 w-1.5 bg-blue-500 rounded-full animate-bounce"
+                                        style={{ animationDelay: "300ms" }}
+                                      />
+                                      <span className="ml-1 text-[10px]">
+                                        正在解析响应 data stream...
+                                      </span>
                                     </div>
                                   )}
                                 </div>
@@ -871,56 +909,124 @@ export default function App() {
 
                 {/* Bottom Dock Input Zone */}
                 <div className="p-4 md:p-6 bg-transparent">
-                  <form onSubmit={handleSubmitMessage} className="max-w-2xl mx-auto relative group">
-                    <div className="relative flex items-center bg-white dark:bg-[#16161b] border border-[#e4e4e7]/50 dark:border-zinc-800/40 focus-within:border-zinc-300 dark:focus-within:border-zinc-700/80 focus-within:ring-4 focus-within:ring-zinc-900/5 dark:focus-within:ring-zinc-100/5 shadow-md rounded-2xl transition duration-300 px-5 py-2">
-                      <textarea
-                        ref={inputRef}
-                        rows={1}
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        placeholder={
-                          !activeSessionId 
-                            ? "新建对话以开始发送消息..." 
-                            : AGENTS[currentAgentId]?.placeholder || !AGENTS[currentAgentId]?.active
-                            ? `${AGENTS[currentAgentId]?.alias} 尚未接入，无法发送消息`
-                            : `向 ${AGENTS[currentAgentId]?.name} 发送消息...`
-                        }
-                        className="flex-1 max-h-32 resize-none bg-transparent py-2.5 pr-12 text-xs leading-relaxed text-zinc-900 dark:text-zinc-150 placeholder:text-zinc-400 dark:placeholder:text-zinc-505 focus:outline-none"
-                        disabled={isGenerating || !activeSessionId || !!(AGENTS[currentAgentId]?.placeholder || !AGENTS[currentAgentId]?.active)}
-                      />
+                  {!activeSessionId ? (
+                    <div className="flex items-center justify-center py-4 select-none">
+                      <span className="text-sm font-medium text-zinc-500 dark:text-zinc-500/80 bg-zinc-100 dark:bg-zinc-900/50 px-6 py-2.5 rounded-full border border-zinc-200/50 dark:border-zinc-800/50">
+                        🔒 请在左侧列表中选择或新建一个会话以开始
+                      </span>
+                    </div>
+                  ) : (
+                    <form
+                      onSubmit={handleSubmitMessage}
+                      className="max-w-2xl mx-auto relative group"
+                    >
+                      <div className="relative flex items-center bg-white dark:bg-[#16161b] border border-[#e4e4e7]/50 dark:border-zinc-800/40 focus-within:border-zinc-300 dark:focus-within:border-zinc-700/80 focus-within:ring-4 focus-within:ring-zinc-900/5 dark:focus-within:ring-zinc-100/5 shadow-md rounded-2xl transition duration-300 px-5 py-2">
+                        <textarea
+                          ref={inputRef}
+                          rows={1}
+                          value={input}
+                          onChange={(e) => setInput(e.target.value)}
+                          onKeyDown={handleKeyDown}
+                          placeholder={
+                            AGENTS[currentAgentId]?.placeholder ||
+                            !AGENTS[currentAgentId]?.active
+                              ? `${AGENTS[currentAgentId]?.alias} 尚未接入，无法发送消息`
+                              : `向 ${AGENTS[currentAgentId]?.name} 发送消息...`
+                          }
+                          className="flex-1 max-h-32 resize-none bg-transparent py-2.5 pr-12 text-xs leading-relaxed text-zinc-900 dark:text-zinc-150 placeholder:text-zinc-400 dark:placeholder:text-zinc-505 focus:outline-none"
+                          disabled={
+                            isGenerating ||
+                            !!(
+                              AGENTS[currentAgentId]?.placeholder ||
+                              !AGENTS[currentAgentId]?.active
+                            )
+                          }
+                        />
 
-                      {/* Submission triggers */}
-                      <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2 select-none">
-                        <motion.button
-                          type="submit"
-                          disabled={!input.trim() || isGenerating || !activeSessionId || !!(AGENTS[currentAgentId]?.placeholder || !AGENTS[currentAgentId]?.active)}
-                          whileHover={input.trim() && !isGenerating && activeSessionId && !(AGENTS[currentAgentId]?.placeholder || !AGENTS[currentAgentId]?.active) ? { scale: 1.08, y: -0.5 } : {}}
-                          whileTap={input.trim() && !isGenerating && activeSessionId && !(AGENTS[currentAgentId]?.placeholder || !AGENTS[currentAgentId]?.active) ? { scale: 0.92 } : {}}
-                          transition={{ type: "spring", stiffness: 400, damping: 15 }}
-                          className={`relative flex items-center justify-center h-8 w-8 rounded-xl text-white dark:text-zinc-950 font-bold transition duration-200 cursor-pointer ${
-                            input.trim() && !isGenerating && activeSessionId && !(AGENTS[currentAgentId]?.placeholder || !AGENTS[currentAgentId]?.active)
-                              ? "bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-100 scale-100 shadow-sm"
-                              : "bg-zinc-100 dark:bg-zinc-850 text-zinc-350 dark:text-zinc-600 scale-95 cursor-not-allowed"
-                          }`}
-                          aria-label="发送消息"
-                          title="发送消息"
-                        >
-                          {isGenerating ? (
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M5 10l7-7m0 0l7 7m-7-7v18" />
-                            </svg>
-                          )}
-                        </motion.button>
+                        {/* Submission triggers */}
+                        <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2 select-none">
+                          <motion.button
+                            type="submit"
+                            disabled={
+                              !input.trim() ||
+                              isGenerating ||
+                              !!(
+                                AGENTS[currentAgentId]?.placeholder ||
+                                !AGENTS[currentAgentId]?.active
+                              )
+                            }
+                            whileHover={
+                              input.trim() &&
+                              !isGenerating &&
+                              !(
+                                AGENTS[currentAgentId]?.placeholder ||
+                                !AGENTS[currentAgentId]?.active
+                              )
+                                ? { scale: 1.08, y: -0.5 }
+                                : {}
+                            }
+                            whileTap={
+                              input.trim() &&
+                              !isGenerating &&
+                              !(
+                                AGENTS[currentAgentId]?.placeholder ||
+                                !AGENTS[currentAgentId]?.active
+                              )
+                                ? { scale: 0.92 }
+                                : {}
+                            }
+                            transition={{
+                              type: "spring",
+                              stiffness: 400,
+                              damping: 15,
+                            }}
+                            className={`relative flex items-center justify-center h-8 w-8 rounded-xl text-white dark:text-zinc-950 font-bold transition duration-200 cursor-pointer ${
+                              input.trim() &&
+                              !isGenerating &&
+                              !(
+                                AGENTS[currentAgentId]?.placeholder ||
+                                !AGENTS[currentAgentId]?.active
+                              )
+                                ? "bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-100 scale-100 shadow-sm"
+                                : "bg-zinc-100 dark:bg-zinc-850 text-zinc-350 dark:text-zinc-600 scale-95 cursor-not-allowed"
+                            }`}
+                            aria-label="发送消息"
+                            title="发送消息"
+                          >
+                            {isGenerating ? (
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <svg
+                                className="w-3.5 h-3.5"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2.5"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  d="M5 10l7-7m0 0l7 7m-7-7v18"
+                                />
+                              </svg>
+                            )}
+                          </motion.button>
+                        </div>
                       </div>
-                    </div>
 
-                    <div className="mt-2 text-center text-[10px] text-zinc-400 dark:text-zinc-500 font-normal font-sans select-none">
-                      按 <kbd className="px-1.5 py-0.5 rounded border border-zinc-200/50 dark:border-zinc-800/40 bg-white/60 dark:bg-zinc-900/60 font-mono text-[9px]">Enter</kbd> 发送消息，按 <kbd className="px-1.5 py-0.5 rounded border border-zinc-200/50 dark:border-zinc-800/40 bg-white/60 dark:bg-zinc-900/60 font-mono text-[9px]">Shift + Enter</kbd> 录入换行。
-                    </div>
-                  </form>
+                      <div className="mt-2 text-center text-[10px] text-zinc-400 dark:text-zinc-500 font-normal font-sans select-none">
+                        按{" "}
+                        <kbd className="px-1.5 py-0.5 rounded border border-zinc-200/50 dark:border-zinc-800/40 bg-white/60 dark:bg-zinc-900/60 font-mono text-[9px]">
+                          Enter
+                        </kbd>{" "}
+                        发送消息，按{" "}
+                        <kbd className="px-1.5 py-0.5 rounded border border-zinc-200/50 dark:border-zinc-800/40 bg-white/60 dark:bg-zinc-900/60 font-mono text-[9px]">
+                          Shift + Enter
+                        </kbd>{" "}
+                        录入换行。
+                      </div>
+                    </form>
+                  )}
                 </div>
               </>
             )}
@@ -960,7 +1066,9 @@ export default function App() {
                     底层安全传输架构
                   </h4>
                   <p className="text-[11px] leading-relaxed text-zinc-400 dark:text-zinc-500 mt-1">
-                    本系统中所有的模型补全与流式读取，均直接通过 Express 的流式反向代理中间件实现，响应处理延迟低于 50ms 且不产生任何敏感秘钥数据泄露。
+                    本系统中所有的模型补全与流式读取，均直接通过 Express
+                    的流式反向代理中间件实现，响应处理延迟低于 50ms
+                    且不产生任何敏感秘钥数据泄露。
                   </p>
                 </div>
               </div>
@@ -984,19 +1092,22 @@ export default function App() {
                 const response = await fetch("/api/agents", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify(newAgent)
+                  body: JSON.stringify(newAgent),
                 });
                 if (response.ok) {
                   const savedAgent = await response.json();
                   AGENTS[savedAgent.id] = savedAgent;
-                  setForceUpdate(p => p + 1);
+                  setForceUpdate((p) => p + 1);
                   setIsWizardOpen(false);
 
                   // Setup floating Green success Toast notice
                   const toastId = Date.now().toString();
-                  setToast({ id: toastId, message: `✅ ${savedAgent.name} 已接入节点网络` });
+                  setToast({
+                    id: toastId,
+                    message: `✅ ${savedAgent.name} 已接入节点网络`,
+                  });
                   setTimeout(() => {
-                    setToast(curr => curr?.id === toastId ? null : curr);
+                    setToast((curr) => (curr?.id === toastId ? null : curr));
                   }, 3000);
                 }
               } catch (e) {

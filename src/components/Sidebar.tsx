@@ -1,448 +1,400 @@
 import React, { useState, useEffect } from "react";
-import { Plus, MessageSquare, Trash2, Settings, ShieldCheck, Sun, Moon, Info, X, ChevronDown, ChevronRight, Lock } from "lucide-react";
-import { ChatSession, AGENTS } from "../types";
+import {
+  Plus,
+  Settings,
+  ShieldCheck,
+  Sun,
+  Moon,
+  X,
+  ChevronRight,
+  Lock,
+  MessageSquare,
+  Pencil,
+} from "lucide-react";
+import { AGENTS, ChatSession } from "../types";
 import { motion, AnimatePresence } from "motion/react";
 
 interface SidebarProps {
-  key?: string;
   sessions: ChatSession[];
+  setSessions: React.Dispatch<React.SetStateAction<ChatSession[]>>;
   activeSessionId: string | null;
   currentAgentId: string;
-  gatewayConnected: boolean;
-  loadingSessionHistory: boolean;
-  onSelectSession: (id: string) => void;
-  onNewSession: (agentId?: string) => void;
-  onDeleteSession: (id: string) => void;
   isDarkMode: boolean;
+  openclawAgents?: Agent[];
   onToggleDarkMode: () => void;
   onAgentSwitch: (id: string) => void;
+  onSelectSession: (id: string) => void;
+  onCreateSession: (agentId: string) => Promise<void>;
   onOpenWizard: () => void;
 }
 
-const getEngineLabel = (runtime: string) => {
-  const rt = (runtime || "").toLowerCase();
+const getEngineLabel = (rt: string) => {
   if (rt === "llama") return "Llama";
   if (rt === "openclaw") return "OpenClaw";
   if (rt === "claude") return "Claude";
-  if (rt === "hermes") return "Hermes";
+  if (rt === "codex") return "Codex";
   return rt ? rt.charAt(0).toUpperCase() + rt.slice(1) : "Unknown";
 };
 
 export default function Sidebar({
   sessions,
+  setSessions,
   activeSessionId,
   currentAgentId,
-  gatewayConnected,
-  loadingSessionHistory,
-  onSelectSession,
-  onNewSession,
-  onDeleteSession,
   isDarkMode,
+  openclawAgents = [],
   onToggleDarkMode,
   onAgentSwitch,
-  onOpenWizard,
+  onSelectSession,
+  onCreateSession,
 }: SidebarProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
+    {},
+  );
+  const [creatingAgentId, setCreatingAgentId] = useState<string | null>(null);
 
-  // Default to only expand the active agent group and collapse others
+  // Initialize expanded groups based on active agents or specific conditions
   useEffect(() => {
-    setExpandedGroups({
-      [currentAgentId]: true,
-    });
-  }, [currentAgentId]);
+    const initialExpanded: Record<string, boolean> = {};
+    if (activeSessionId) {
+      const activeSess = sessions.find((s) => s.id === activeSessionId);
+      if (activeSess?.agentId) {
+        initialExpanded[activeSess.agentId] = true;
+      }
+    } else {
+      initialExpanded[currentAgentId] = true;
+    }
+    setExpandedGroups((prev) => ({ ...prev, ...initialExpanded }));
+  }, [activeSessionId, currentAgentId, sessions]);
 
   const toggleGroup = (agentId: string) => {
-    const agent = AGENTS[agentId];
-    if (agent?.placeholder || !agent?.active) return;
     setExpandedGroups((prev) => ({
       ...prev,
       [agentId]: !prev[agentId],
     }));
   };
 
-  const getGroupedSessions = () => {
+  const groupedSessions = () => {
     const grouped: Record<string, ChatSession[]> = {};
-    Object.keys(AGENTS).forEach(id => {
+    Object.keys(AGENTS).forEach((id) => {
       grouped[id] = [];
     });
-    
-    sessions.forEach(sess => {
+    sessions.forEach((sess) => {
       const aId = sess.agentId || "hermes";
       if (!grouped[aId]) grouped[aId] = [];
       grouped[aId].push(sess);
     });
-
     return grouped;
   };
 
-  const groupedSessions = getGroupedSessions();
+  const sessionsMap = groupedSessions();
+
+  const handleCreateNew = async (e: React.MouseEvent, agentId: string) => {
+    e.stopPropagation();
+    if (creatingAgentId) return;
+
+    setCreatingAgentId(agentId);
+    try {
+      await onCreateSession(agentId);
+      setExpandedGroups((prev) => ({ ...prev, [agentId]: true }));
+    } finally {
+      setCreatingAgentId(null);
+    }
+  };
+
+  const handleRename = async (e: React.MouseEvent, sessionId: string) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    const newName = window.prompt("请输入新的会话名称：");
+    if (!newName || newName.trim() === "") return;
+
+    const trimmedName = newName.trim();
+    // 乐观更新 UI
+    setSessions((prev) =>
+      prev.map((s) => (s.id === sessionId ? { ...s, title: trimmedName } : s)),
+    );
+
+    try {
+      await fetch("/api/openclaw/sessions/rename", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ sessionKey: sessionId, title: trimmedName }),
+      });
+    } catch (err) {
+      console.error("Failed to rename session:", err);
+    }
+  };
 
   return (
-    <aside className="relative w-80 border-r border-[#e4e4e7]/30 dark:border-zinc-900/30 bg-[#f5f5f7] dark:bg-[#121215] flex flex-col justify-between h-full group/sidebar transition-all duration-300">
-      
-      {/* 1. Main Sidebar Interface (Rendered when settings is closed) */}
+    <aside className="relative w-[340px] border-r border-[#e4e4e7]/30 dark:border-zinc-900/30 bg-[#f5f5f7] dark:bg-[#121215] flex flex-col justify-between h-full group/sidebar transition-all duration-300">
       <div className="flex-1 flex flex-col justify-between h-full min-h-0">
-        
-        {/* Top Header section */}
-        <div className="p-5 flex flex-col gap-4 select-none shrink-0" aria-label="Nexus 多智能体网关">
+        <div
+          className="p-5 flex flex-col gap-4 select-none shrink-0"
+          aria-label="Nexus 控制台"
+        >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <div className="h-8 w-8 rounded-xl bg-zinc-900 dark:bg-white flex items-center justify-center text-white dark:text-zinc-950 font-sans font-extrabold text-sm shadow-xs">
+              <div className="h-8 w-8 rounded-xl bg-zinc-900 dark:bg-zinc-100 items-center justify-center flex font-bold text-white dark:text-zinc-900 text-sm shadow-md">
                 N
               </div>
               <div>
-                <h1 className="text-xs font-bold tracking-tight text-zinc-800 dark:text-zinc-100 font-sans">
+                <h1 className="text-xs font-bold tracking-tight text-zinc-800 dark:text-zinc-100 font-sans flex items-center gap-2">
                   Nexus 节点机
                 </h1>
-                <span className="text-[9px] text-zinc-400 font-mono tracking-wider">v1.3 // 网关</span>
+                <span className="text-[9px] text-zinc-400 font-mono tracking-wider">
+                  v1.3 // 网关
+                </span>
               </div>
             </div>
 
             <motion.button
               onClick={onToggleDarkMode}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  onToggleDarkMode();
-                }
-              }}
               whileHover={{ scale: 1.15, rotate: 15 }}
               whileTap={{ scale: 0.9 }}
               transition={{ type: "spring", stiffness: 400, damping: 15 }}
-              className="p-1.5 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/40 dark:hover:bg-zinc-805/40 rounded-lg transition-colors cursor-pointer"
-              title="切换主题"
-              aria-label="切换主题"
+              className="p-2 rounded-xl text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 hover:bg-zinc-200/50 dark:hover:bg-zinc-800 transition-colors shadow-none cursor-pointer"
             >
-              {isDarkMode ? <Sun className="w-3.5 h-3.5 text-amber-500" /> : <Moon className="w-3.5 h-3.5" />}
+              {isDarkMode ? (
+                <Sun className="w-3.5 h-3.5 text-amber-500" />
+              ) : (
+                <Moon className="w-3.5 h-3.5" />
+              )}
             </motion.button>
           </div>
-
         </div>
 
-        {/* Scrollable Chat Sessions History Section */}
-        <div className="flex-1 overflow-y-auto px-4 space-y-4 scrollbar-thin pr-1 min-h-0">
+        <div className="flex-1 overflow-y-auto px-4 space-y-3 scrollbar-none pb-4">
           {Object.values(AGENTS).map((agent) => {
-            const agentSessions = groupedSessions[agent.id] || [];
+            const agentSessions = sessionsMap[agent.id] || [];
             const isExpanded = expandedGroups[agent.id] || false;
-            const isPlaceholder = agent.placeholder || !agent.active;
-            const isCurrentAgent = currentAgentId === agent.id;
+            const isCodexPlaceholder =
+              agent.placeholder && agent.id === "codex";
+            const rt = agent.runtime;
 
             return (
-              <div key={agent.id} className={`flex flex-col gap-1 ${isPlaceholder ? 'opacity-50 grayscale' : ''}`}>
-                {/* Agent Header */}
+              <div
+                key={agent.id}
+                className={`flex flex-col gap-1.5 ${isCodexPlaceholder ? "opacity-50 grayscale" : ""}`}
+              >
                 <div
                   role="button"
-                  tabIndex={isPlaceholder ? -1 : 0}
+                  tabIndex={0}
                   onClick={() => {
-                    if (!isPlaceholder) {
+                    if (!isCodexPlaceholder) {
+                      toggleGroup(agent.id);
                       onAgentSwitch(agent.id);
-                      if (!isExpanded) toggleGroup(agent.id);
                     }
                   }}
-                  onKeyDown={(e) => {
-                    if ((e.key === 'Enter' || e.key === ' ') && !isPlaceholder) {
-                      e.preventDefault();
-                      onAgentSwitch(agent.id);
-                      if (!isExpanded) toggleGroup(agent.id);
-                    }
-                  }}
-                  aria-label={isPlaceholder ? `${agent.name} 预留接口，不可点击` : `展开 ${agent.name} 会话列表`}
-                  className={`group relative flex items-center justify-between w-full px-3 py-2 rounded-xl transition-all select-none ${
-                    isPlaceholder 
-                      ? 'cursor-not-allowed' 
-                      : 'cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800'
+                  className={`group relative flex items-center justify-between w-full px-2 py-2 rounded-xl transition-all select-none ${
+                    isCodexPlaceholder
+                      ? "cursor-not-allowed"
+                      : "cursor-pointer hover:bg-zinc-100/50 dark:hover:bg-zinc-800/50"
                   }`}
                 >
-                  <div className={`flex items-start gap-2 flex-1 transition-all`}>
-                    <div className="flex flex-col items-start gap-0.5 mt-0.5">
-                      <span className="text-sm font-bold text-zinc-700 dark:text-zinc-200 font-sans tracking-tight flex items-center gap-1.5 flex-wrap">
-                        <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-medium font-sans tracking-tight leading-none shrink-0 ${
-                          agent.runtime === "llama"
-                            ? "bg-emerald-100/60 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400"
-                            : agent.runtime === "openclaw"
-                            ? "bg-violet-100/60 dark:bg-violet-950/40 text-violet-700 dark:text-violet-400"
-                            : agent.runtime === "claude"
-                            ? "bg-orange-100/60 dark:bg-orange-950/40 text-orange-700 dark:text-orange-400"
-                            : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400"
-                        }`}>
-                          {getEngineLabel(agent.runtime)}
-                        </span>
-                        {agent.emoji} {agent.name}
-                        {isPlaceholder && (
-                          <span className="ml-1 px-1.5 py-0.5 text-[9px] rounded-md bg-amber-100/50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 font-normal">
-                            即将上线
-                          </span>
-                        )}
+                  <div className="flex items-center gap-2 flex-1">
+                    {/* Runtime Pill */}
+                    <span
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-semibold tracking-tight leading-none shrink-0 border 
+                        ${rt === "llama" ? "bg-emerald-100/50 text-emerald-700 border-emerald-200/50 dark:bg-emerald-900/40 dark:text-emerald-400 dark:border-emerald-800/40" : ""}
+                        ${rt === "openclaw" ? "bg-violet-100/50 text-violet-700 border-violet-200/50 dark:bg-violet-900/40 dark:text-violet-400 dark:border-violet-800/40" : ""}
+                        ${rt === "claude" ? "bg-orange-100/50 text-orange-700 border-orange-200/50 dark:bg-orange-900/40 dark:text-orange-400 dark:border-orange-800/40" : ""}
+                        ${rt === "codex" ? "bg-zinc-200/50 text-zinc-500 border-zinc-300/50 dark:bg-zinc-800/50 dark:text-zinc-500 dark:border-zinc-700" : ""}
+                      `}
+                    >
+                      {getEngineLabel(rt)}
+                    </span>
+
+                    {/* Name */}
+                    <span className="text-[13px] font-bold text-zinc-700 dark:text-zinc-200 flex items-center gap-1.5">
+                      <span className="text-base leading-none">
+                        {agent.emoji}
                       </span>
-                    </div>
+                      {agent.name}
+                    </span>
+
+                    {/* Placeholder status */}
+                    {isCodexPlaceholder && (
+                      <span className="text-[10px] text-zinc-400 font-medium ml-1">
+                        即将上线
+                      </span>
+                    )}
                   </div>
-                  <div className="flex items-center gap-2 opacity-70">
-                    {!isPlaceholder && (
+
+                  <div className="flex items-center gap-2 shrink-0 mr-3 transition-opacity">
+                    {/* Plus Button */}
+                    {!isCodexPlaceholder && currentAgentId === agent.id && (
                       <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onAgentSwitch(agent.id);
-                          onNewSession(agent.id);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.stopPropagation();
-                            e.preventDefault();
-                            onAgentSwitch(agent.id);
-                            onNewSession(agent.id);
-                          }
-                        }}
-                        className="p-1 rounded-md hover:bg-zinc-200/80 dark:hover:bg-zinc-700/80 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
-                        aria-label="新建对话"
+                        onClick={(e) => handleCreateNew(e, agent.id)}
+                        disabled={creatingAgentId !== null}
+                        className="flex items-center justify-center w-5 h-5 rounded-md text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 transition-colors"
                       >
-                        <Plus className="w-4 h-4" />
+                        {creatingAgentId === agent.id ? (
+                          <div className="w-3.5 h-3.5 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <Plus className="w-4 h-4" />
+                        )}
                       </button>
                     )}
-                    {!isPlaceholder && (
-                      <span className="text-[10px] font-mono text-zinc-500 bg-zinc-200/50 dark:bg-zinc-800/50 px-1.5 py-0.5 rounded leading-none min-w-[20px] text-center">
+                  </div>
+
+                  <div className="flex items-center justify-end w-[42px] gap-2 shrink-0 pr-1">
+                    {/* Count Pill */}
+                    {!isCodexPlaceholder && (
+                      <span className="text-[10px] font-mono font-medium text-zinc-500 bg-zinc-200/60 dark:bg-zinc-800 px-1.5 py-0.5 rounded leading-none min-w-[20px] text-center border border-zinc-300/30 dark:border-zinc-700/30">
                         {agentSessions.length}
                       </span>
                     )}
-                    {isPlaceholder ? (
+
+                    {/* Chevron or Lock */}
+                    {isCodexPlaceholder ? (
                       <Lock className="w-3.5 h-3.5 text-zinc-400" />
                     ) : (
                       <motion.div
-                        animate={{ rotate: isExpanded ? 0 : -90 }}
+                        animate={{ rotate: isExpanded ? 90 : 0 }}
                         transition={{ duration: 0.2 }}
                       >
-                        <ChevronDown className="w-4 h-4 text-zinc-400" />
+                        <ChevronRight className="w-4 h-4 text-zinc-400" />
                       </motion.div>
                     )}
                   </div>
                 </div>
 
-                {/* Agent Sessions List */}
-                <div 
-                  className={`overflow-hidden transition-all duration-300 ease-in-out`}
-                  style={{ maxHeight: isExpanded && !isPlaceholder ? "1000px" : "0px", opacity: isExpanded && !isPlaceholder ? 1 : 0 }}
+                {/* Sublist */}
+                <div
+                  className="overflow-hidden transition-all duration-300 ease-in-out pl-3 pr-1"
+                  style={{
+                    maxHeight: isExpanded ? "1000px" : "0px",
+                    opacity: isExpanded ? 1 : 0,
+                  }}
                 >
-                  <div className="pl-2 ml-3 py-1 space-y-1 border-l-2 border-blue-500/50 dark:border-blue-500/40">
-                    {agentSessions.length === 0 && !isPlaceholder ? (
-                       <div className="pl-4 py-2 text-[11px] text-zinc-400 dark:text-zinc-500 font-normal italic">
-                         {currentAgentId === "openclaw" 
-                           ? (gatewayConnected ? "等待会话同步..." : "正在连接 Gateway...")
-                           : `暂无 ${agent.alias || agent.name.split(" ")[0]} 对话`}
-                       </div>
-                    ) : (
-                      agentSessions.map((sess) => {
-                        const isActive = sess.id === activeSessionId;
-                        const isGateway = !!sess.sessionKey;
-                        const msgCount = sess.messages.length;
-                        const isLoading = isActive && loadingSessionHistory;
-                        // Channel badge
-                        const chLabel = sess.channel === "webchat" ? "🌐" : sess.channel === "feishu" ? "📱" : sess.channel === "cron" ? "⏰" : "";
-                        return (
-                          <motion.div
-                            key={sess.id}
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => onSelectSession(sess.id)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                onSelectSession(sess.id);
-                              }
-                            }}
-                            className={`group/item flex items-center justify-between w-full px-3 py-2 ml-1 rounded-xl transition-all text-left relative cursor-pointer border border-transparent ${
+                  <div className="pl-3 py-1 space-y-1">
+                    {agentSessions.map((sess) => {
+                      const isActive = sess.id === activeSessionId;
+                      return (
+                        <div
+                          key={sess.id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => onSelectSession(sess.id)}
+                          className="group/item flex items-center justify-between w-full rounded-xl transition-all text-left relative cursor-pointer"
+                        >
+                          {isActive && (
+                            <div className="absolute left-[-13px] top-1/2 -translate-y-1/2 w-[3px] h-[60%] rounded-r-full bg-blue-500 z-10" />
+                          )}
+                          <div
+                            className={`flex items-center justify-between gap-1 w-full transition-colors rounded-xl px-3 py-2 ${
                               isActive
-                                ? "bg-white dark:bg-zinc-905 text-zinc-900 dark:text-white shadow-2xs border-[#e4e4e7]/20 dark:border-zinc-800/20"
-                                : "hover:bg-zinc-200/40 dark:hover:bg-zinc-900/30 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100"
+                                ? "bg-white dark:bg-zinc-900 shadow-sm border border-zinc-200/50 dark:border-zinc-800"
+                                : "hover:bg-zinc-200/40 dark:hover:bg-zinc-800/40 text-zinc-600 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 border border-transparent"
                             }`}
                           >
-                            <div className="flex flex-col overflow-hidden w-[82%] min-w-0">
-                              <div className="flex items-center gap-2">
-                                <MessageSquare className={`w-3 h-3 shrink-0 ${isActive ? "text-zinc-905 dark:text-white" : "text-zinc-400"}`} />
-                                <span className="text-[11px] font-semibold leading-normal font-sans truncate pr-1">
-                                  {sess.title || "新对话"}
-                                </span>
-                              </div>
-                              {isGateway && (
-                                <div className="flex items-center gap-2 ml-5 mt-0.5">
-                                  <span className="text-[9px] text-zinc-400 font-mono">
-                                    {chLabel} {sess.channel} · {sess.totalTokens ? `${Math.round(sess.totalTokens / 1000)}k tokens` : ""}
-                                  </span>
-                                  {sess.lastMessagePreview && (
-                                    <span className="text-[9px] text-zinc-400 truncate max-w-[120px]">
-                                      {sess.lastMessagePreview.slice(0, 30)}
-                                    </span>
-                                  )}
-                                </div>
-                              )}
-                              {isLoading && (
-                                <div className="flex items-center gap-1 ml-5 mt-0.5">
-                                  <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce" />
-                                  <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                                  <span className="w-1 h-1 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-                                  <span className="text-[9px] text-blue-400 ml-1">加载历史...</span>
-                                </div>
-                              )}
+                            <div className="flex items-center gap-2.5 overflow-hidden">
+                              <MessageSquare
+                                className={`w-3.5 h-3.5 shrink-0 ${isActive ? "text-zinc-800 dark:text-zinc-200" : "text-zinc-400"}`}
+                              />
+                              <span
+                                className={`text-[12px] font-medium leading-normal font-sans truncate ${isActive ? "text-zinc-900 dark:text-white font-semibold" : ""}`}
+                              >
+                                {sess.title || "新对话"}
+                              </span>
                             </div>
-
-                            <motion.button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onDeleteSession(sess.id);
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' || e.key === ' ') {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  onDeleteSession(sess.id);
-                                }
-                              }}
-                              whileHover={{ scale: 1.1, x: -1 }}
-                              whileTap={{ scale: 0.9 }}
-                              className="opacity-0 group-hover/item:opacity-100 focus:opacity-100 shrink-0 p-1 rounded-md text-zinc-400 hover:text-rose-500 hover:bg-zinc-200/50 dark:hover:bg-zinc-800/60 transition-all cursor-pointer"
-                              title="删除对话"
-                              aria-label="删除对话"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </motion.button>
-                          </motion.div>
-                        );
-                      })
-                    )}
+                            
+                            {agent.runtime === "openclaw" && (
+                              <button
+                                onClick={(e) => handleRename(e, sess.id)}
+                                className={`flex shrink-0 items-center justify-center w-5 h-5 rounded-md text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-opacity ${isActive ? "opacity-100" : "opacity-0 group-hover/item:opacity-100"}`}
+                                title="重命名"
+                              >
+                                <Pencil className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
             );
           })}
+
+          <div className="pt-2">
+            {/* 预留“云端新建 Agent”入口：如果用户选择创建 OpenClaw Agent，未来的 API 提交路径应指向代理网关，而不是本地服务器的 API */}
+            <button
+              onClick={() => {
+                // Future implementation: Add OpenClaw agent -> POST /api/openclaw/v1/models (代理网关)
+                alert("即将通过云端代理网关创建新 Agent，敬请期待！");
+              }}
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 bg-transparent hover:bg-zinc-100/50 dark:hover:bg-zinc-800/50 text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors text-[13px] font-semibold cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              添加新 Agent
+            </button>
+          </div>
         </div>
 
-        {/* Footer block (No Divider Above) */}
         <div className="p-4 bg-transparent flex flex-col gap-3 select-none shrink-0 border-t border-zinc-200/30 dark:border-zinc-800/30">
-          
-          <motion.button 
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={onOpenWizard}
-            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800/50 text-zinc-600 dark:text-zinc-300 rounded-xl text-xs font-semibold border border-dashed border-zinc-300 dark:border-zinc-700 transition-colors"
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-200/30 dark:border-zinc-800/30 rounded-xl text-xs font-semibold text-zinc-650 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-850 shadow-xs transition-colors cursor-pointer"
           >
-             <Plus className="w-3.5 h-3.5" />
-             添加新 Agent 网络
-          </motion.button>
-
-          <div className="flex items-center justify-between gap-1 px-1">
-            <div className="flex items-center gap-2">
-              <div className={`w-1.5 h-1.5 rounded-full ${currentAgentId === "openclaw" ? (gatewayConnected ? "bg-emerald-500 animate-pulse" : "bg-rose-500") : "bg-emerald-500 animate-pulse"}`} />
-              <span className="text-[10px] font-bold text-zinc-650 dark:text-zinc-400 font-sans tracking-wide">
-                {currentAgentId === "openclaw" 
-                  ? (gatewayConnected ? "Gateway 实时同步" : "Gateway 连接中...")
-                  : "Tailscale 隧道连接状态"}
-              </span>
-            </div>
-            <span className="text-[9px] font-mono text-zinc-400 dark:text-zinc-500">
-              {currentAgentId === "openclaw" ? "18789" : "100.83.118.16"}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <motion.button
-              onClick={() => setSettingsOpen(true)}
-              whileHover={{ y: -1, scale: 1.01 }}
-              whileTap={{ scale: 0.98 }}
-              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-200/30 dark:border-zinc-800/30 rounded-xl text-xs font-semibold text-zinc-650 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-850 cursor-pointer shadow-xs"
-            >
-              <Settings className="w-3.5 h-3.5 text-zinc-500" />
-              <span>系统配置项</span>
-            </motion.button>
-          </div>
+            <Settings className="w-3.5 h-3.5 text-zinc-500" />
+            <span>系统配置项</span>
+          </button>
         </div>
       </div>
 
-      {/* 2. Embedded Settings Panel (Directly OVERLAPS the left sidebar window when toggled with sliding effect) */}
       <AnimatePresence>
         {settingsOpen && (
           <motion.div
-            initial={{ opacity: 0, x: -60 }}
+            initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -60 }}
-            transition={{ type: "spring", stiffness: 380, damping: 28 }}
+            exit={{ opacity: 0, x: -20 }}
+            transition={{ type: "spring", stiffness: 400, damping: 25 }}
             className="absolute inset-0 z-20 flex flex-col justify-between bg-white dark:bg-[#121215] p-5 font-sans antialiased text-left shadow-2xl"
           >
             <div className="flex-1 flex flex-col min-h-0 space-y-5">
-              
-              {/* Header section with raw close button */}
               <div className="flex items-start justify-between">
                 <div>
                   <h3 className="text-sm font-bold text-zinc-800 dark:text-zinc-100">
-                    外部网络代理设置
+                    控制台配置
                   </h3>
-                  <p className="text-[10px] text-zinc-400 mt-1 leading-normal">
-                    管理后端连接架构与 API 接口定义
+                  <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-widest font-bold">
+                    SYSTEM PREFERENCES
                   </p>
                 </div>
-                <motion.button
+                <button
                   onClick={() => setSettingsOpen(false)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      setSettingsOpen(false);
-                    }
-                  }}
-                  whileHover={{ scale: 1.1, rotate: 90 }}
-                  whileTap={{ scale: 0.9 }}
-                  transition={{ type: "spring", stiffness: 350, damping: 15 }}
-                  className="p-1 rounded-lg text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-900 cursor-pointer"
-                  title="返回"
-                  aria-label="关闭"
+                  className="p-1 rounded-lg text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-900"
                 >
                   <X className="w-3.5 h-3.5" />
-                </motion.button>
+                </button>
               </div>
 
-              {/* Content list with background cards instead of line dividers */}
               <div className="flex-1 overflow-y-auto space-y-4 pr-1 min-h-0 scrollbar-none">
-                
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">
-                    大模型配置端点
-                  </label>
-                  <div className="p-3 bg-zinc-50 dark:bg-zinc-900/60 border border-[#e4e4e7]/20 dark:border-zinc-800/20 text-[10px] font-mono rounded-xl text-zinc-800 dark:text-zinc-200 break-all select-all">
-                    http://100.83.118.16:8000/v1/chat/completions
-                  </div>
-                </div>
-
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider flex items-center gap-1">
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" /> Bearer 秘钥认证保护
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />{" "}
+                    标准会话状态
                   </label>
-                  <div className="flex items-center justify-between p-3 bg-zinc-50 dark:bg-zinc-900/60 border border-[#e4e4e7]/20 dark:border-zinc-800/20 font-mono text-[10px] rounded-xl">
-                    <span className="text-zinc-400 font-semibold truncate select-all pr-2">
-                      Bearer 43847f73aa132c3abfa9b076eb1dd7ff...
-                    </span>
-                    <span className="text-[9px] uppercase font-bold text-zinc-400 font-sans px-1.5 py-0.5 rounded bg-zinc-200/50 dark:bg-zinc-800">
-                      已验证
-                    </span>
+                  <div className="p-3 bg-zinc-50 dark:bg-zinc-900/60 border border-[#e4e4e7]/20 dark:border-zinc-800/20 text-[10px] font-mono rounded-xl text-zinc-800 dark:text-zinc-200 break-all select-all">
+                    已连接
                   </div>
                 </div>
-                
-                <div className="p-3 rounded-xl bg-blue-50/40 dark:bg-blue-950/10 text-[10px] leading-relaxed text-blue-600 dark:text-blue-400 flex gap-2">
-                  <Info className="w-3.5 h-3.5 shrink-0 text-blue-500 mt-0.5" />
-                  <span>
-                    系统通过 Tailscale 加密隧道直连受信任的物理核心节点。
-                  </span>
-                </div>
-                
               </div>
             </div>
 
-            <div className="pt-4 shrink-0">
-              <motion.button
+            <div className="shrink-0 mt-4">
+              <button
                 onClick={() => setSettingsOpen(false)}
-                whileHover={{ y: -1, scale: 1.01 }}
-                whileTap={{ scale: 0.98 }}
-                className="w-full py-2 bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-100 text-white dark:text-zinc-950 text-xs font-semibold rounded-xl cursor-pointer shadow-xs"
+                className="w-full py-2 bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-100 text-white dark:text-zinc-950 text-xs font-semibold rounded-xl"
               >
                 完成并返回工作台
-              </motion.button>
+              </button>
             </div>
           </motion.div>
         )}
