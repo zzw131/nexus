@@ -1,0 +1,6 @@
+{
+  "name": "Nexus 多智能体网关",
+  "description": "极具优雅质感的 Apple 磨砂玻璃风格 Bento 控制台，内置多智能体协作网关，支持接入本地 Hermes 模型及 OpenClaw 远程协作平台，并提供 MacBook Pro 系统硬件负载遥测及快捷运维指令。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

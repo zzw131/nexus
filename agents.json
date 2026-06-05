@@ -1,0 +1,110 @@
+[
+  {
+    "id": "hermes",
+    "name": "Hermes 核心大脑",
+    "alias": "Hermes",
+    "emoji": "🧠",
+    "color": "#10b981",
+    "description": "端侧大语言模型推理引擎，基于 llama.cpp · 高频指令调度 · 本地隐私安全",
+    "runtime": "llama",
+    "model": "llama-3-8b-instruct",
+    "computerId": "mac",
+    "capabilities": [
+      "文本对话",
+      "代码生成",
+      "指令调度",
+      "系统运维"
+    ],
+    "active": true,
+    "personality": {
+      "style": "专业沉稳",
+      "greeting": "你好，我是 Hermes。本地推理引擎已就绪，随时为你服务。"
+    }
+  },
+  {
+    "id": "claude",
+    "name": "Claude Code CLI",
+    "alias": "Claude",
+    "emoji": "⚡",
+    "color": "#d97757",
+    "description": "Anthropic 命令行助手 · 强大多项目重构",
+    "runtime": "claude",
+    "model": "claude-3-5-sonnet",
+    "computerId": "cloud",
+    "capabilities": [
+      "代码生成",
+      "工程重构"
+    ],
+    "active": true,
+    "personality": {
+      "style": "精简",
+      "greeting": "Claude Code 已就绪，准备进行代码分析与重构。"
+    }
+  },
+  {
+    "id": "codex",
+    "name": "Codex 编程引擎",
+    "alias": "Codex",
+    "emoji": "🛠️",
+    "color": "#3b82f6",
+    "description": "OpenAI 代码补全核心 · 上下文感知",
+    "runtime": "codex",
+    "model": "gpt-4-turbo",
+    "computerId": "cloud",
+    "capabilities": [
+      "代码补全"
+    ],
+    "active": false,
+    "placeholder": true,
+    "personality": {
+      "style": "极简",
+      "greeting": "Codex 引擎当前处于未激活状态。"
+    }
+  },
+  {
+    "id": "openclaw-main",
+    "name": "全局协作牛马",
+    "alias": "全局协作牛马",
+    "emoji": "🐂",
+    "color": "#f59e0b",
+    "description": "OpenClaw Agent · 通过 Gateway 连接",
+    "runtime": "openclaw",
+    "internalModel": "openclaw/main",
+    "computerId": "cloud",
+    "capabilities": [
+      "多模态对话",
+      "知识检索",
+      "Agent 协同",
+      "联网搜索"
+    ],
+    "active": true,
+    "synced": true,
+    "personality": {
+      "style": "智能协作",
+      "greeting": "你好，我是 全局协作牛马。OpenClaw Agent 已就绪，随时为你服务。"
+    }
+  },
+  {
+    "id": "openclaw-jianshen",
+    "name": "健身教练",
+    "alias": "健身教练",
+    "emoji": "💪",
+    "color": "#10b981",
+    "description": "OpenClaw Agent · 通过 Gateway 连接",
+    "runtime": "openclaw",
+    "internalModel": "openclaw/jianshen",
+    "computerId": "cloud",
+    "capabilities": [
+      "多模态对话",
+      "知识检索",
+      "Agent 协同",
+      "联网搜索"
+    ],
+    "active": true,
+    "synced": true,
+    "personality": {
+      "style": "智能协作",
+      "greeting": "你好，我是 健身教练。OpenClaw Agent 已就绪，随时为你服务。"
+    }
+  }
+]
