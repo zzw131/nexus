@@ -8,8 +8,8 @@ set -euo pipefail
 
 # ─── 配置 ───────────────────────────────────────────────
 REMOTE_HOST="root@123.56.182.139"
-REMOTE_PATH="/www/wwwroot/hermes-webui/dist/"
-PM2_APP="hermes-webui"
+REMOTE_PATH="/www/wwwroot/nexus-webui/dist/"
+PM2_APP="nexus-webui"
 SSH_KEY="$HOME/.ssh/aliyun_ed25519"
 LOCAL_DIR="$HOME/Desktop/nexus"
 

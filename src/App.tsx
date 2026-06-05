@@ -354,6 +354,7 @@ export default function App() {
 
   // 本地会话持久化（仅 Hermes 等本地 Agent，OpenClaw 以 Gateway 为 Source of Truth）
   const syncLocalSession = async (session: ChatSession) => {
+
     try {
       await fetch("/api/history", {
         method: "POST",
@@ -362,6 +363,28 @@ export default function App() {
       });
     } catch (err) {
       console.error("Failed to sync local session:", err);
+    }
+  };
+
+  // ── 会话重命名（写入 MySQL 持久化，瞬时更新前端状态）──
+  const handleRenameSession = async (sessionId: string, newTitle: string) => {
+    // 1. 先本地即时刷新（用户体验优先）
+    setSessions((prev) =>
+      prev.map((s) => (s.id === sessionId ? { ...s, title: newTitle } : s)),
+    );
+
+    // 2. 异步写入 MySQL
+    try {
+      const res = await fetch("/api/openclaw/sessions/rename", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, newTitle }),
+      });
+      if (!res.ok) {
+        console.error("重命名 API 返回错误:", res.status);
+      }
+    } catch (err) {
+      console.error("重命名请求失败（UI 已刷新，下次拉取恢复）:", err);
     }
   };
 
@@ -622,6 +645,7 @@ export default function App() {
           onAgentSwitch={handleAgentSwitch}
           onSelectSession={handleSelectSession}
           onCreateSession={handleCreateSession}
+          onRenameSession={handleRenameSession}
           onOpenWizard={() => setIsWizardOpen(true)}
         />
       </div>
