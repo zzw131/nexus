@@ -115,7 +115,7 @@ export default function Sidebar({
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
               <div className="h-8 w-8 rounded-xl bg-black items-center justify-center flex font-bold text-white text-sm shadow-md">
-                n
+                N
               </div>
               <div>
                 <h1 className="text-xs font-bold tracking-tight text-zinc-800 dark:text-zinc-100 font-sans flex items-center gap-2">
