@@ -1,149 +1,134 @@
 import React, { useState, useEffect, useRef } from "react";
-import { X, Pencil } from "lucide-react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "motion/react";
+import { PencilLine } from "lucide-react";
 
 interface RenameSessionModalProps {
-  isOpen: boolean;
-  sessionName: string;
-  onClose: () => void;
+  open: boolean;
+  currentName: string;
   onConfirm: (newName: string) => void;
+  onClose: () => void;
 }
 
-export default function RenameSessionModal({
-  isOpen,
-  sessionName,
-  onClose,
+export function RenameSessionModal({
+  open,
+  currentName,
   onConfirm,
+  onClose,
 }: RenameSessionModalProps) {
-  const [newName, setNewName] = useState(sessionName);
+  const [inputValue, setInputValue] = useState(currentName);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // 同步外部 sessionName 变化 & 自动聚焦
   useEffect(() => {
-    if (isOpen) {
-      setNewName(sessionName);
-      // 延迟聚焦，等动画完成
+    if (open) {
+      setInputValue(currentName);
+      // 延迟确保完全渲染后再聚焦，避免弹窗抖动失效
       setTimeout(() => {
-        inputRef.current?.focus();
-        inputRef.current?.select();
-      }, 150);
+        if (inputRef.current) {
+          inputRef.current.focus();
+          inputRef.current.select(); // 自动全选
+        }
+      }, 50);
     }
-  }, [isOpen, sessionName]);
+  }, [open, currentName]);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = newName.trim();
-    if (!trimmed) return;
-    onConfirm(trimmed);
-    onClose();
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") {
+  const handleConfirm = () => {
+    const trimmed = inputValue.trim();
+    if (trimmed) {
+      onConfirm(trimmed);
       onClose();
     }
   };
 
-  return (
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.2 }}
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          onKeyDown={handleKeyDown}
-        >
-          {/* 🌌 弥散极光渐变背景层 */}
-          <div className="absolute inset-0 bg-gradient-to-b from-[#fef9c3] via-[#dcfce7]/70 to-[#e0f2fe]/40" />
-          <div className="absolute inset-0 bg-gradient-to-br from-[#fef9c3]/30 via-transparent to-[#dcfce7]/20 blur-3xl" />
-          <div className="absolute inset-0 bg-gradient-to-tl from-[#e0f2fe]/30 via-transparent to-[#fef9c3]/20 blur-3xl" />
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleConfirm();
+    } else if (e.key === "Escape") {
+      onClose();
+    }
+  };
 
-          {/* 🌫️ 模糊遮罩 */}
+  if (!open) return null;
+
+  const isConfirmDisabled = !inputValue.trim();
+
+  return createPortal(
+    <AnimatePresence>
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          {/* 背景毛玻璃遮罩 */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-white/30 backdrop-blur-sm"
+            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
             onClick={onClose}
           />
-
-          {/* ✨ 毛玻璃卡片 */}
-          <motion.form
-            onSubmit={handleSubmit}
-            initial={{ opacity: 0, scale: 0.92, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.92, y: 20 }}
+          
+          {/* Modal 主容器 */}
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
             transition={{ type: "spring", stiffness: 400, damping: 25 }}
-            className="relative z-10 w-full max-w-sm bg-white/60 backdrop-blur-xl border border-white/50 rounded-2xl shadow-xl shadow-black/5 overflow-hidden"
+            className="relative w-full max-w-sm overflow-hidden rounded-[32px] shadow-2xl bg-white/90 dark:bg-zinc-900/90 border border-white/60 dark:border-zinc-700/50 backdrop-blur-xl"
           >
-            {/* 装饰：顶部细线 */}
-            <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-black/10 to-transparent" />
-
-            <div className="p-6 space-y-5">
-              {/* Header */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-[#1a1a2e]/5 flex items-center justify-center">
-                    <Pencil className="w-4 h-4 text-[#1a1a2e]" />
-                  </div>
-                  <h2 className="text-sm font-bold text-[#1a1a2e] tracking-tight">
-                    重命名会话
-                  </h2>
-                </div>
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="p-1.5 rounded-xl text-[#64748b] hover:text-[#1a1a2e] hover:bg-[#1a1a2e]/5 transition-colors cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
+            {/* 极光渐变背景特效 */}
+            <div 
+              className="absolute inset-0 z-0 opacity-60 dark:opacity-30 pointer-events-none" 
+              style={{
+                background: 'radial-gradient(circle at 10% 0%, rgba(254,240,138,0.7), transparent 40%), radial-gradient(circle at 90% 10%, rgba(186,230,253,0.7), transparent 40%), radial-gradient(circle at 50% -20%, rgba(134,239,172,0.7), transparent 50%)',
+                filter: 'blur(30px)',
+              }}
+            />
+            
+            <div className="absolute inset-0 z-0 bg-gradient-to-b from-transparent via-white/80 to-white dark:via-zinc-900/80 dark:to-zinc-900 pointer-events-none" />
+            
+            {/* 前景内容区材质 */}
+            <div className="relative z-10 px-6 pt-8 pb-6 flex flex-col items-center">
+              <div className="flex items-center gap-2 mb-6 text-zinc-900 dark:text-zinc-100">
+                <PencilLine className="w-5 h-5" />
+                <h3 className="text-lg font-extrabold font-sans">
+                  重命名会话
+                </h3>
               </div>
-
-              {/* 说明文字 */}
-              <p className="text-xs text-[#64748b] leading-relaxed">
-                为会话设置一个新名称，方便后续查找和管理。
-              </p>
-
-              {/* 输入框：胶囊形 */}
-              <div className="relative">
+              
+              <div className="w-full relative mb-6">
                 <input
                   ref={inputRef}
-                  type="text"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  onKeyDown={handleKeyDown}
                   placeholder="输入会话名称"
-                  className="w-full px-4 py-3 pr-10 text-sm font-medium text-[#1a1a2e] placeholder:text-[#94a3b8] bg-white/80 backdrop-blur-sm border border-black/5 focus:border-black/20 focus:ring-4 focus:ring-black/5 rounded-full outline-none transition-all duration-200"
+                  className="w-full px-5 py-3.5 bg-white/60 dark:bg-zinc-800/60 backdrop-blur-lg border border-white/80 dark:border-zinc-700/80 rounded-full text-zinc-900 dark:text-zinc-100 font-medium placeholder-zinc-400 dark:placeholder-zinc-500 shadow-sm focus:outline-none focus:ring-2 focus:ring-zinc-500/20 dark:focus:ring-white/20 transition-all font-sans"
                 />
-                <Pencil className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[#94a3b8]" />
               </div>
-
-              {/* 按钮组：胶囊形 */}
-              <div className="flex items-center gap-3 pt-1">
+              
+              <div className="flex items-center justify-between w-full gap-3">
                 <button
-                  type="button"
                   onClick={onClose}
-                  className="flex-1 px-4 py-2.5 text-sm font-semibold text-[#64748b] hover:text-[#1a1a2e] bg-white/50 hover:bg-white/80 backdrop-blur-sm border border-black/5 rounded-full transition-all cursor-pointer"
+                  className="flex-1 py-3 rounded-full border border-zinc-200/60 dark:border-zinc-700/60 bg-white/50 dark:bg-zinc-800/50 backdrop-blur-sm font-bold text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-700/50 transition-colors shadow-sm text-sm"
                 >
                   取消
                 </button>
                 <button
-                  type="submit"
-                  disabled={!newName.trim()}
-                  className={`flex-1 px-4 py-2.5 text-sm font-semibold rounded-full transition-all cursor-pointer ${
-                    newName.trim()
-                      ? "bg-[#1a1a2e] text-white hover:bg-[#2d2d44] shadow-md shadow-black/10 hover:shadow-lg hover:shadow-black/15 active:scale-[0.98]"
-                      : "bg-[#1a1a2e]/20 text-[#94a3b8] cursor-not-allowed"
+                  onClick={handleConfirm}
+                  disabled={isConfirmDisabled}
+                  className={`flex-1 py-3 rounded-full font-bold transition-all shadow-sm text-sm ${
+                    isConfirmDisabled
+                      ? "bg-zinc-100 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-600 cursor-not-allowed"
+                      : "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 hover:bg-zinc-800 dark:hover:bg-white hover:scale-[1.02] active:scale-[0.98]"
                   }`}
                 >
-                  确认修改
+                  确认
                 </button>
               </div>
             </div>
-          </motion.form>
-        </motion.div>
+          </motion.div>
+        </div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 }

@@ -716,7 +716,7 @@ export default function App() {
       {/* Main Container */}
       <div className="flex-1 flex flex-col min-w-0 h-full relative z-10 bg-white/30 dark:bg-zinc-950/20">
         {/* Dynamic header bar containing connection credentials */}
-        <header className="h-16 flex items-center justify-between px-8 bg-white/30 dark:bg-zinc-950/20 backdrop-blur-md border-b border-zinc-200/50 dark:border-zinc-800/40 z-10 select-none">
+        <header className="min-h-[4rem] py-2 md:py-0 flex flex-wrap items-center justify-between px-4 md:px-8 gap-y-2 gap-x-4 bg-white/30 dark:bg-zinc-950/20 backdrop-blur-md border-b border-zinc-200/50 dark:border-zinc-800/40 z-10 select-none">
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2.5 pl-1">
               <div
@@ -730,12 +730,12 @@ export default function App() {
                   {AGENTS[currentAgentId]?.emoji}
                 </span>
               </div>
-              <h2 className="text-[14px] font-bold tracking-tight text-zinc-900 dark:text-white font-sans flex items-center gap-2">
-                {AGENTS[currentAgentId]?.name}
+              <h2 className="text-[14px] font-bold tracking-tight text-zinc-900 dark:text-white font-sans flex items-center flex-wrap gap-x-2 gap-y-0.5">
+                <span className="whitespace-nowrap">{AGENTS[currentAgentId]?.name}</span>
                 <span className="text-zinc-300 dark:text-zinc-700 font-normal">
                   /
                 </span>
-                <span className="text-[13px] font-medium text-zinc-500 dark:text-zinc-400">
+                <span className="text-[13px] font-medium text-zinc-500 dark:text-zinc-400 line-clamp-1">
                   {
                     AGENTS[currentAgentId]?.description
                       ?.split("，")[0]

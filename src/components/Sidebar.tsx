@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { AGENTS, ChatSession, Agent } from "../types";
 import { motion, AnimatePresence } from "motion/react";
-import RenameSessionModal from "./RenameSessionModal";
+import { RenameSessionModal } from "./RenameSessionModal";
 
 interface SidebarProps {
   sessions: ChatSession[];
@@ -326,8 +326,8 @@ export default function Sidebar({
 
         {/* 重命名弹窗 */}
         <RenameSessionModal
-          isOpen={renamingSession !== null}
-          sessionName={renamingSession?.title || ""}
+          open={renamingSession !== null}
+          currentName={renamingSession?.title || ""}
           onClose={() => setRenamingSession(null)}
           onConfirm={(newName) => {
             if (renamingSession && onRenameSession) {
