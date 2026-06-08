@@ -10,7 +10,7 @@ import {
   Lock,
   MessageSquare,
 } from "lucide-react";
-import { AGENTS, ChatSession } from "../types";
+import { AGENTS, ChatSession, Agent } from "../types";
 import { motion, AnimatePresence } from "motion/react";
 
 interface SidebarProps {
@@ -18,6 +18,7 @@ interface SidebarProps {
   activeSessionId: string | null;
   currentAgentId: string;
   isDarkMode: boolean;
+  isAdmin: boolean;
   openclawAgents?: Agent[];
   onToggleDarkMode: () => void;
   onAgentSwitch: (id: string) => void;
@@ -40,6 +41,7 @@ export default function Sidebar({
   activeSessionId,
   currentAgentId,
   isDarkMode,
+  isAdmin,
   openclawAgents = [],
   onToggleDarkMode,
   onAgentSwitch,
@@ -278,8 +280,8 @@ export default function Sidebar({
                             >
                               {sess.title || "新对话"}
                             </span>
-                            {/* 重命名按钮：hover 显示，事件隔离 */}
-                            {onRenameSession && (
+                            {/* 重命名按钮：仅管理员可见，hover 显示，事件隔离 */}
+                            {onRenameSession && isAdmin && (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();

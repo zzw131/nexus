@@ -1,7 +1,9 @@
+import "dotenv/config";
 import express from "express";
 import path from "path";
 import fs from "fs";
 import http from "http";
+import jwt from "jsonwebtoken";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
@@ -10,6 +12,8 @@ const app = express();
 const PORT = parseInt(process.env.PORT || "3210", 10);
 const HISTORY_FILE = path.join(process.cwd(), "history.json");
 const AGENTS_FILE = path.join(process.cwd(), "agents.json");
+const JWT_SECRET = process.env.JWT_SECRET || "nexus-default-jwt-secret-change-me";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "changeme123";
 
 // Default initial agents mapping to AGENTS in types.ts
 const DEFAULT_AGENTS = [
@@ -273,6 +277,47 @@ app.get("/api/sessions/:sessionKey/history", async (req, res) => {
 });
 
 app.use(express.json());
+
+// ── POST /api/auth/login ────────────────────────────────────────
+// 管理员登录：验证密码，签发 JWT（角色 ADMIN，有效期 24h）
+app.post("/api/auth/login", (req, res) => {
+  const { password } = req.body;
+  if (!password) {
+    return res.status(400).json({ error: "Password is required" });
+  }
+  if (password !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: "Invalid password" });
+  }
+
+  const token = jwt.sign({ role: "ADMIN" }, JWT_SECRET, { expiresIn: "24h" });
+  res.json({ token, role: "ADMIN" });
+});
+
+// ── 全局鉴权中间件 ──────────────────────────────────────────────
+// GET / OPTIONS: 游客放行
+// POST / PUT / DELETE / PATCH: 需 Bearer Token，角色 ADMIN
+app.use((req, res, next) => {
+  if (req.method === "GET" || req.method === "OPTIONS") {
+    return next();
+  }
+
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Missing or malformed Authorization header" });
+  }
+
+  const token = authHeader.slice(7);
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    if (decoded.role !== "ADMIN") {
+      return res.status(403).json({ error: "Admin role required for write operations" });
+    }
+    next();
+  } catch (err: any) {
+    const msg = err.name === "TokenExpiredError" ? "Token expired" : "Invalid token";
+    return res.status(401).json({ error: msg });
+  }
+});
 
 // ── GET /api/openclaw/sessions ──────────────────────────────────
 // 从 Gateway 拉取原始会话 JSON，尝试用 Prisma customTitle 覆盖

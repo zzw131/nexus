@@ -16,6 +16,7 @@ import {
   Sparkles,
   AlertTriangle,
   X,
+  Lock,
 } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import MarkdownRenderer from "./components/MarkdownRenderer";
@@ -61,6 +62,52 @@ export default function App() {
   );
   // v5.0 影子缓存：Gateway 离线降级标记
   const [isGatewayOffline, setIsGatewayOffline] = useState<boolean>(false);
+  // ── 鉴权状态 ──
+  const [isAdmin, setIsAdmin] = useState<boolean>(() => {
+    const token = localStorage.getItem("nexus_token");
+    if (!token) return false;
+    try {
+      const payload = JSON.parse(atob(token.split(".")[1]));
+      return payload.role === "ADMIN" && payload.exp * 1000 > Date.now();
+    } catch {
+      localStorage.removeItem("nexus_token");
+      return false;
+    }
+  });
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+
+  const getAuthHeaders = (): Record<string, string> => {
+    const token = localStorage.getItem("nexus_token");
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError("");
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: loginPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setLoginError(data.error || "认证失败");
+        return;
+      }
+      localStorage.setItem("nexus_token", data.token);
+      setIsAdmin(true);
+      setLoginPassword("");
+    } catch {
+      setLoginError("网络错误，请重试");
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("nexus_token");
+    setIsAdmin(false);
+  };
 
   const { executeWithRetry, isRetrying, retryCount, resetRetry } = useRetry();
 
@@ -370,7 +417,7 @@ export default function App() {
     try {
       await fetch("/api/history", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify(session),
       });
     } catch (err) {
@@ -389,7 +436,7 @@ export default function App() {
     try {
       const res = await fetch("/api/openclaw/sessions/rename", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({ sessionId, newTitle }),
       });
       if (!res.ok) {
@@ -477,7 +524,7 @@ export default function App() {
       const response = await executeWithRetry(() => {
         return fetch("/api/chat", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
           body: JSON.stringify({
             messages: updatedMessages.map(({ role, content }) => ({
               role,
@@ -661,6 +708,7 @@ export default function App() {
           onSelectSession={handleSelectSession}
           onCreateSession={handleCreateSession}
           onRenameSession={handleRenameSession}
+          isAdmin={isAdmin}
           onOpenWizard={() => setIsWizardOpen(true)}
         />
       </div>
@@ -749,9 +797,19 @@ export default function App() {
             </div>
 
             {/* General latency checker simulation */}
-            <div className="flex items-center gap-1.5 text-xs text-zinc-450 dark:text-zinc-500 font-mono">
-              <Wifi className="w-3.5 h-3.5 text-emerald-500" />
-              <span>中转网关在线</span>
+            <div className="flex items-center gap-3">
+              {isAdmin && (
+                <button
+                  onClick={handleLogout}
+                  className="px-3 py-1.5 rounded-lg text-[11px] font-bold font-sans border bg-zinc-100 dark:bg-zinc-800 border-zinc-200/50 dark:border-zinc-700/50 text-zinc-500 dark:text-zinc-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-all cursor-pointer"
+                >
+                  登出
+                </button>
+              )}
+              <div className="flex items-center gap-1.5 text-xs text-zinc-450 dark:text-zinc-500 font-mono">
+                <Wifi className="w-3.5 h-3.5 text-emerald-500" />
+                <span>中转网关在线</span>
+              </div>
             </div>
           </div>
         </header>
@@ -1010,6 +1068,41 @@ export default function App() {
                         📡 Gateway 离线 · 只读模式 — 发送消息功能已暂停
                       </span>
                     </div>
+                  ) : !isAdmin ? (
+                    /* 🔐 游客模式：管理员登录入口 */
+                    <div className="max-w-md mx-auto">
+                      <form onSubmit={handleLogin} className="relative flex flex-col gap-3">
+                        <div className="relative flex items-center bg-white dark:bg-[#16161b] border border-zinc-200/50 dark:border-zinc-800/40 focus-within:border-zinc-300 dark:focus-within:border-zinc-700/80 focus-within:ring-4 focus-within:ring-zinc-900/5 dark:focus-within:ring-zinc-100/5 shadow-md rounded-2xl transition duration-300 px-5 py-2">
+                          <input
+                            type="password"
+                            value={loginPassword}
+                            onChange={(e) => { setLoginPassword(e.target.value); setLoginError(""); }}
+                            placeholder="请输入管理员密码"
+                            className="flex-1 bg-transparent py-2.5 pr-20 text-xs leading-relaxed text-zinc-900 dark:text-zinc-150 placeholder:text-zinc-400 dark:placeholder:text-zinc-505 focus:outline-none"
+                          />
+                          <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                            <button
+                              type="submit"
+                              disabled={!loginPassword.trim()}
+                              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-bold transition-all duration-200 ${
+                                loginPassword.trim()
+                                  ? "bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-100 text-white dark:text-zinc-950 shadow-sm cursor-pointer"
+                                  : "bg-zinc-100 dark:bg-zinc-850 text-zinc-350 dark:text-zinc-600 cursor-not-allowed"
+                              }`}
+                            >
+                              <Lock className="w-3 h-3" />
+                              认证
+                            </button>
+                          </div>
+                        </div>
+                        {loginError && (
+                          <p className="text-center text-[11px] text-red-500 dark:text-red-400 font-medium">{loginError}</p>
+                        )}
+                        <p className="text-center text-[10px] text-zinc-400 dark:text-zinc-500 font-sans">
+                          🔒 管理员认证后可发送消息和管理会话
+                        </p>
+                      </form>
+                    </div>
                   ) : (
                     <form
                       onSubmit={handleSubmitMessage}
@@ -1186,7 +1279,7 @@ export default function App() {
               try {
                 const response = await fetch("/api/agents", {
                   method: "POST",
-                  headers: { "Content-Type": "application/json" },
+                  headers: { "Content-Type": "application/json", ...getAuthHeaders() },
                   body: JSON.stringify(newAgent),
                 });
                 if (response.ok) {
