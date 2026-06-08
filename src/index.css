@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
 @import "tailwindcss";
 
 @theme {
@@ -8,6 +8,31 @@
   /* Custom bento background transitions */
   --color-zinc-850: #202024;
   --color-zinc-905: #111113;
+
+  --animate-shimmer: shimmer 2s infinite linear;
+  --animate-text-shimmer: text-shimmer 2.5s ease-out infinite alternate;
+  --animate-rainbow-glow: rainbow-flow 8s ease infinite;
+  --animate-loader-progress: loader-progress 3.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  @keyframes text-shimmer {
+    0% { background-position: 0% 50%; }
+    100% { background-position: 200% 50%; }
+  }
+  @keyframes rainbow-flow {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+  @keyframes loader-progress {
+    0% { width: 0%; opacity: 0.95; }
+    80% { width: 100%; opacity: 0.95; }
+    90% { width: 100%; opacity: 0; }
+    100% { width: 0%; opacity: 0; }
+  }
 }
 
 @variant dark (&:where(.dark, .dark *));
@@ -42,7 +67,8 @@
 }
 
 /* Base style resets */
-html, body {
+html,
+body {
   font-family: var(--font-sans);
   background-color: var(--lobe-bg);
   color: var(--lobe-text-main);
@@ -61,7 +87,9 @@ html, body {
   background-color: var(--lobe-card);
   border: 1px solid var(--lobe-border);
   border-radius: var(--lobe-radius-xl);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.01), 0 1px 2px rgba(0, 0, 0, 0.005);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.01),
+    0 1px 2px rgba(0, 0, 0, 0.005);
 }
 
 .lobe-flat-card {
@@ -105,8 +133,6 @@ html, body {
   display: none;
 }
 .scrollbar-none {
-  -ms-overflow-style: none;  /* IE and Edge */
-  scrollbar-width: none;  /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
 }
-
-

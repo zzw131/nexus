@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Lock,
   MessageSquare,
+  PencilLine,
 } from "lucide-react";
 import { AGENTS, ChatSession, Agent } from "../types";
 import { motion, AnimatePresence } from "motion/react";
@@ -78,10 +79,7 @@ export default function Sidebar({
     }));
   };
 
-  const allAgentsToRender = [
-    ...Object.values(AGENTS),
-    ...openclawAgents,
-  ];
+  const allAgentsToRender = [...Object.values(AGENTS), ...openclawAgents];
 
   const groupedSessions = () => {
     const grouped: Record<string, ChatSession[]> = {};
@@ -112,22 +110,22 @@ export default function Sidebar({
   };
 
   return (
-    <aside className="relative w-[340px] border-r border-[#e4e4e7]/30 dark:border-zinc-900/30 bg-[#f5f5f7] dark:bg-[#121215] flex flex-col justify-between h-full group/sidebar transition-all duration-300">
+    <aside className="relative w-[340px] border-r border-zinc-200/20 dark:border-zinc-800/20 bg-white/75 dark:bg-[#131118]/80 backdrop-blur-md flex flex-col justify-between h-full group/sidebar transition-all duration-300">
       <div className="flex-1 flex flex-col justify-between h-full min-h-0">
         <div
-          className="p-5 flex flex-col gap-4 select-none shrink-0"
+          className="p-5 bg-white/90 dark:bg-white/10 border-b border-zinc-200/20 dark:border-white/5 flex flex-col gap-4 select-none shrink-0 mb-2 shadow-sm relative z-10"
           aria-label="Nexus 控制台"
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <div className="h-8 w-8 rounded-xl bg-black items-center justify-center flex font-bold text-white text-sm shadow-md">
+              <div className="h-8 w-8 rounded-xl bg-zinc-900 dark:bg-zinc-100 items-center justify-center flex font-bold text-white dark:text-zinc-900 text-sm shadow-md">
                 N
               </div>
               <div>
-                <h1 className="text-xs font-bold tracking-tight text-zinc-800 dark:text-zinc-100 font-sans flex items-center gap-2">
+                <h1 className="text-xs font-bold tracking-tight text-zinc-950 dark:text-white font-sans flex items-center gap-2">
                   Nexus 节点机
                 </h1>
-                <span className="text-[9px] text-zinc-400 font-mono tracking-wider">
+                <span className="text-[9px] text-zinc-500 dark:text-zinc-300 font-mono tracking-wider">
                   v1.3 // 网关
                 </span>
               </div>
@@ -166,15 +164,16 @@ export default function Sidebar({
                   role="button"
                   tabIndex={0}
                   onClick={() => {
-                    if (!isCodexPlaceholder) {
+                    if (!isCodexPlaceholder && agentSessions.length > 0) {
                       toggleGroup(agent.id);
-                      onAgentSwitch(agent.id);
                     }
                   }}
                   className={`group relative flex items-center justify-between w-full px-2 py-2 rounded-xl transition-all select-none ${
                     isCodexPlaceholder
                       ? "cursor-not-allowed"
-                      : "cursor-pointer hover:bg-zinc-100/50 dark:hover:bg-zinc-800/50"
+                      : agentSessions.length === 0
+                        ? "cursor-default"
+                        : "cursor-pointer hover:bg-zinc-100/50 dark:hover:bg-zinc-800/50"
                   }`}
                 >
                   <div className="flex items-center gap-2 flex-1">
@@ -207,7 +206,7 @@ export default function Sidebar({
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0 mr-3 transition-opacity">
-                    {/* Plus Button */}
+                    {/* Plus Button - only shown when this agent is selected */}
                     {!isCodexPlaceholder && currentAgentId === agent.id && (
                       <button
                         onClick={(e) => handleCreateNew(e, agent.id)}
@@ -234,75 +233,78 @@ export default function Sidebar({
                     {/* Chevron or Lock */}
                     {isCodexPlaceholder ? (
                       <Lock className="w-3.5 h-3.5 text-zinc-400" />
-                    ) : (
+                    ) : agentSessions.length > 0 ? (
                       <motion.div
                         animate={{ rotate: isExpanded ? 90 : 0 }}
                         transition={{ duration: 0.2 }}
                       >
                         <ChevronRight className="w-4 h-4 text-zinc-400" />
                       </motion.div>
+                    ) : (
+                      <div className="w-4 h-4" />
                     )}
                   </div>
                 </div>
 
                 {/* Sublist */}
                 <div
-                  className="overflow-hidden transition-all duration-300 ease-in-out pl-3 pr-1"
+                  className="overflow-hidden transition-all duration-300 ease-in-out pl-0 pr-0"
                   style={{
-                    maxHeight: isExpanded ? "1000px" : "0px",
-                    opacity: isExpanded ? 1 : 0,
+                    maxHeight: (isExpanded || agentSessions.length === 0) ? "1000px" : "0px",
+                    opacity: (isExpanded || agentSessions.length === 0) ? 1 : 0,
                   }}
                 >
-                  <div className="pl-3 py-1 space-y-1">
-                    {agentSessions.map((sess) => {
-                      const isActive = sess.id === activeSessionId;
-                      return (
-                        <div
-                          key={sess.id}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => onSelectSession(sess.id)}
-                          className="group/item flex items-center justify-between w-full rounded-xl transition-all text-left relative cursor-pointer"
-                        >
-                          {isActive && (
-                            <div className="absolute left-[-13px] top-1/2 -translate-y-1/2 w-[3px] h-[60%] rounded-r-full bg-blue-500 z-10" />
-                          )}
+                  <div className="p-1 space-y-1 bg-white dark:bg-[#1e1c26]/80 rounded-xl mt-1 shadow-sm border border-zinc-100/80 dark:border-zinc-800/30">
+                    {agentSessions.length === 0 ? (
+                      <div className="py-4 px-2 text-center text-zinc-400 dark:text-zinc-600 text-[11px] font-medium select-none flex flex-col items-center gap-1.5 opacity-80">
+                        暂无会话数据
+                      </div>
+                    ) : (
+                      agentSessions.map((sess) => {
+                        const isActive = sess.id === activeSessionId;
+                        return (
                           <div
-                            className={`flex items-center gap-2.5 w-full transition-colors rounded-xl px-3 py-2 ${
-                              isActive
-                                ? "bg-white dark:bg-zinc-900 shadow-sm border border-zinc-200/50 dark:border-zinc-800"
-                                : "hover:bg-zinc-200/40 dark:hover:bg-zinc-800/40 text-zinc-600 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 border border-transparent"
-                            }`}
+                            key={sess.id}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => onSelectSession(sess.id)}
+                            className="group/item flex items-center justify-between w-full rounded-xl transition-all text-left relative cursor-pointer"
                           >
-                            <MessageSquare
-                              className={`w-3.5 h-3.5 shrink-0 ${isActive ? "text-zinc-800 dark:text-zinc-200" : "text-zinc-400"}`}
-                            />
-                            <span
-                              className={`text-[12px] font-medium leading-normal font-sans truncate ${isActive ? "text-zinc-900 dark:text-white font-semibold" : ""}`}
+                            <div
+                              className={`flex items-center gap-2.5 w-full transition-all duration-300 rounded-xl px-4 py-2.5 ${
+                                isActive
+                                  ? "bg-white dark:bg-white/20 border border-white dark:border-white/30 shadow-[0_4px_24px_rgba(255,255,255,1)] dark:shadow-[0_4px_24px_rgba(255,255,255,0.1)] backdrop-blur-xl pr-9"
+                                  : "hover:bg-zinc-200/40 dark:hover:bg-zinc-800/40 text-zinc-600 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 border border-transparent pr-9"
+                              }`}
                             >
-                              {sess.title || "新对话"}
-                            </span>
-                            {/* 重命名按钮：仅管理员可见，hover 显示，事件隔离 */}
-                            {onRenameSession && isAdmin && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  e.preventDefault();
-                                  setRenamingSession({ id: sess.id, title: sess.title || "" });
-                                }}
-                                className="ml-auto shrink-0 p-0.5 rounded opacity-0 group-hover/item:opacity-100 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-all cursor-pointer"
-                                title="重命名"
+                              <MessageSquare
+                                className={`w-3.5 h-3.5 shrink-0 ${isActive ? "text-zinc-900 dark:text-white" : "text-zinc-400"}`}
+                              />
+                              <span
+                                className={`text-[12px] font-medium leading-normal font-sans truncate ${isActive ? "text-zinc-950 dark:text-white font-semibold" : ""}`}
                               >
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3">
-                                  <path d="M5.433 13.917l1.262-3.155A4 4 0 017.58 9.42l6.92-6.918a2.121 2.121 0 013 3l-6.92 6.918c-.383.383-.84.685-1.343.886l-3.154 1.262a.5.5 0 01-.65-.65z" />
-                                  <path d="M3.5 5.75c0-.69.56-1.25 1.25-1.25H10A.75.75 0 0010 3H4.75A2.75 2.75 0 002 5.75v9.5A2.75 2.75 0 004.75 18h9.5A2.75 2.75 0 0017 15.25V10a.75.75 0 00-1.5 0v5.25c0 .69-.56 1.25-1.25 1.25h-9.5c-.69 0-1.25-.56-1.25-1.25v-9.5z" />
-                                </svg>
-                              </button>
+                                {sess.title || "新对话"}
+                              </span>
+                            </div>
+                            
+                            {/* Edit Button - visible on hover, admin only */}
+                            {onRenameSession && isAdmin && (
+                              <div className={`absolute right-2 top-1/2 -translate-y-1/2 transition-opacity ${isActive ? "opacity-100" : "opacity-0 group-hover/item:opacity-100"}`}>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setRenamingSession({ id: sess.id, title: sess.title || "" });
+                                  }}
+                                  className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 transition-colors"
+                                >
+                                  <PencilLine className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
                             )}
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })
+                    )}
                   </div>
                 </div>
               </div>
@@ -310,10 +312,8 @@ export default function Sidebar({
           })}
 
           <div className="pt-2">
-            {/* 预留“云端新建 Agent”入口：如果用户选择创建 OpenClaw Agent，未来的 API 提交路径应指向代理网关，而不是本地服务器的 API */}
             <button
               onClick={() => {
-                // Future implementation: Add OpenClaw agent -> POST /api/openclaw/v1/models (代理网关)
                 alert("即将通过云端代理网关创建新 Agent，敬请期待！");
               }}
               className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700 bg-transparent hover:bg-zinc-100/50 dark:hover:bg-zinc-800/50 text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors text-[13px] font-semibold cursor-pointer"
@@ -340,9 +340,9 @@ export default function Sidebar({
         <div className="p-4 bg-transparent flex flex-col gap-3 select-none shrink-0 border-t border-zinc-200/30 dark:border-zinc-800/30">
           <button
             onClick={() => setSettingsOpen(true)}
-            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-200/30 dark:border-zinc-800/30 rounded-xl text-xs font-semibold text-zinc-650 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-850 shadow-xs transition-colors cursor-pointer"
+            className="flex-1 flex items-center justify-center gap-3 px-4 py-3 bg-transparent rounded-xl text-[14px] font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-all duration-300 cursor-pointer group/sec-btn"
           >
-            <Settings className="w-3.5 h-3.5 text-zinc-500" />
+            <Settings className="w-5 h-5 text-zinc-500 transition-all duration-500 group-hover/sec-btn:rotate-90 group-hover/sec-btn:scale-110" />
             <span>系统配置项</span>
           </button>
         </div>
@@ -355,7 +355,7 @@ export default function Sidebar({
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -20 }}
             transition={{ type: "spring", stiffness: 400, damping: 25 }}
-            className="absolute inset-0 z-20 flex flex-col justify-between bg-white dark:bg-[#121215] p-5 font-sans antialiased text-left shadow-2xl"
+            className="absolute inset-0 z-20 flex flex-col justify-between bg-white/95 dark:bg-[#131118]/95 p-5 font-sans antialiased text-left shadow-2xl border-r border-zinc-200/40 dark:border-zinc-800/40 backdrop-blur-md"
           >
             <div className="flex-1 flex flex-col min-h-0 space-y-5">
               <div className="flex items-start justify-between">

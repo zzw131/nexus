@@ -8,7 +8,9 @@ interface MarkdownRendererProps {
 export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
   // If the content is empty, show a cursor block or loading pulses
   if (!content) {
-    return <span className="inline-block w-2 h-4 bg-zinc-400 dark:bg-zinc-500 animate-pulse" />;
+    return (
+      <span className="inline-block w-2 h-4 bg-zinc-400 dark:bg-zinc-500 animate-pulse" />
+    );
   }
 
   // Regex to split content by code fences: ```lang ... ```
@@ -112,16 +114,23 @@ function TextBlock({ text }: { text: string }) {
             depth === 1
               ? "text-xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100 mt-4 mb-2 first:mt-0 font-sans"
               : depth === 2
-              ? "text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mt-3 mb-1 first:mt-0 font-sans"
-              : "text-base font-semibold text-zinc-900 dark:text-zinc-100 mt-2 mb-1 first:mt-0 font-sans";
-          return React.createElement(`h${Math.min(depth + 1, 6)}`, { key: lIdx, className: headerClasses }, parseInline(content));
+                ? "text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mt-3 mb-1 first:mt-0 font-sans"
+                : "text-base font-semibold text-zinc-900 dark:text-zinc-100 mt-2 mb-1 first:mt-0 font-sans";
+          return React.createElement(
+            `h${Math.min(depth + 1, 6)}`,
+            { key: lIdx, className: headerClasses },
+            parseInline(content),
+          );
         }
 
         // 2. Render Unordered Lists
         if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
           const listContent = trimmed.replace(/^[-*]\s*/, "");
           return (
-            <ul key={lIdx} className="list-disc pl-5 space-y-1 my-1 text-zinc-700 dark:text-zinc-300">
+            <ul
+              key={lIdx}
+              className="list-disc pl-5 space-y-1 my-1 text-zinc-700 dark:text-zinc-300"
+            >
               <li>{parseInline(listContent)}</li>
             </ul>
           );
@@ -132,7 +141,10 @@ function TextBlock({ text }: { text: string }) {
           const orderNum = trimmed.match(/^(\d+)\.\s+/)?.[1] || "1";
           const listContent = trimmed.replace(/^\d+\.\s+/, "");
           return (
-            <ol key={lIdx} className="list-decimal pl-5 space-y-1 my-1 text-zinc-700 dark:text-zinc-300">
+            <ol
+              key={lIdx}
+              className="list-decimal pl-5 space-y-1 my-1 text-zinc-700 dark:text-zinc-300"
+            >
               <li value={parseInt(orderNum, 10)}>{parseInline(listContent)}</li>
             </ol>
           );
@@ -145,7 +157,10 @@ function TextBlock({ text }: { text: string }) {
 
         // 5. Standard line
         return (
-          <p key={lIdx} className="text-zinc-700 dark:text-zinc-300 font-normal leading-relaxed">
+          <p
+            key={lIdx}
+            className="text-zinc-700 dark:text-zinc-300 font-normal leading-relaxed"
+          >
             {parseInline(line)}
           </p>
         );
@@ -165,7 +180,10 @@ function parseInline(text: string) {
   return tokens.map((token, index) => {
     if (token.startsWith("**") && token.endsWith("**")) {
       return (
-        <strong key={index} className="font-semibold text-zinc-900 dark:text-zinc-100">
+        <strong
+          key={index}
+          className="font-semibold text-zinc-900 dark:text-zinc-100"
+        >
           {token.slice(2, -2)}
         </strong>
       );

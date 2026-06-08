@@ -1,5 +1,5 @@
-import React from 'react';
-import { Sparkles, Construction } from 'lucide-react';
+import React from "react";
+import { Sparkles, Construction } from "lucide-react";
 
 interface AgentPlaceholderProps {
   agentName: string;

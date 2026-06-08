@@ -22,11 +22,11 @@ export function RenameSessionModal({
   useEffect(() => {
     if (open) {
       setInputValue(currentName);
-      // 延迟确保完全渲染后再聚焦，避免弹窗抖动失效
+      // Ensure element is fully rendered before focusing and selecting
       setTimeout(() => {
         if (inputRef.current) {
           inputRef.current.focus();
-          inputRef.current.select(); // 自动全选
+          inputRef.current.select();
         }
       }, 50);
     }
@@ -57,7 +57,7 @@ export function RenameSessionModal({
     <AnimatePresence>
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          {/* 背景毛玻璃遮罩 */}
+          {/* Backdrop */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -66,7 +66,7 @@ export function RenameSessionModal({
             onClick={onClose}
           />
           
-          {/* Modal 主容器 */}
+          {/* Modal Container */}
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -74,18 +74,19 @@ export function RenameSessionModal({
             transition={{ type: "spring", stiffness: 400, damping: 25 }}
             className="relative w-full max-w-sm overflow-hidden rounded-[32px] shadow-2xl bg-white/90 dark:bg-zinc-900/90 border border-white/60 dark:border-zinc-700/50 backdrop-blur-xl"
           >
-            {/* 极光渐变背景特效 */}
+            {/* Aurora Background Mesh */}
             <div 
               className="absolute inset-0 z-0 opacity-60 dark:opacity-30 pointer-events-none" 
               style={{
                 background: 'radial-gradient(circle at 10% 0%, rgba(254,240,138,0.7), transparent 40%), radial-gradient(circle at 90% 10%, rgba(186,230,253,0.7), transparent 40%), radial-gradient(circle at 50% -20%, rgba(134,239,172,0.7), transparent 50%)',
                 filter: 'blur(30px)',
               }}
-            />
+            ></div>
             
+            {/* Smooth Fade to White/Dark at the bottom */}
             <div className="absolute inset-0 z-0 bg-gradient-to-b from-transparent via-white/80 to-white dark:via-zinc-900/80 dark:to-zinc-900 pointer-events-none" />
-            
-            {/* 前景内容区材质 */}
+
+            {/* Glassmorphic Foreground Content */}
             <div className="relative z-10 px-6 pt-8 pb-6 flex flex-col items-center">
               <div className="flex items-center gap-2 mb-6 text-zinc-900 dark:text-zinc-100">
                 <PencilLine className="w-5 h-5" />
@@ -104,7 +105,7 @@ export function RenameSessionModal({
                   className="w-full px-5 py-3.5 bg-white/60 dark:bg-zinc-800/60 backdrop-blur-lg border border-white/80 dark:border-zinc-700/80 rounded-full text-zinc-900 dark:text-zinc-100 font-medium placeholder-zinc-400 dark:placeholder-zinc-500 shadow-sm focus:outline-none focus:ring-2 focus:ring-zinc-500/20 dark:focus:ring-white/20 transition-all font-sans"
                 />
               </div>
-              
+
               <div className="flex items-center justify-between w-full gap-3">
                 <button
                   onClick={onClose}

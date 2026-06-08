@@ -17,6 +17,7 @@ import {
   AlertTriangle,
   X,
   Lock,
+  Menu,
 } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import MarkdownRenderer from "./components/MarkdownRenderer";
@@ -27,6 +28,8 @@ import {
   NetworkStatusBar,
 } from "./components/MacTelemetry";
 import { AgentPlaceholder } from "./components/AgentPlaceholder";
+import { AIGeneratingState } from "./components/AIGeneratingState";
+import { RefStyleMockup } from "./components/RefStyleMockup";
 import { Message, ChatSession, Agent, AGENTS } from "./types";
 import { motion, AnimatePresence } from "motion/react";
 import { useRetry } from "./hooks/useRetry";
@@ -42,6 +45,7 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [pinging, setPinging] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<"chat" | "telemetry">("chat");
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
 
   // Multi-Agent Gateway routing states
   const [currentAgentId, setCurrentAgentId] = useState<string>(() => {
@@ -186,8 +190,6 @@ export default function App() {
     }
   }, [isDarkMode]);
 
-  // Initialization handled by fetchAllSessions
-
   // Save selected session back to local storage
   useEffect(() => {
     if (activeSessionId) {
@@ -220,21 +222,20 @@ export default function App() {
           allSessions = [...localSessions];
         }
 
-        // ── 2. OpenClaw 会话：从 Gateway 100% 实时拉取（不读本地 history.json）──
+        // ── 2. OpenClaw 会话：从 Gateway 100% 实时拉取 ──
         try {
           const clawRes = await fetch("/api/openclaw/sessions");
           if (clawRes.ok) {
             const clawSessions = await clawRes.json();
             const mappedClawSessions: ChatSession[] = clawSessions.map(
               (cs: any) => {
-                // 根据 agentId 映射到前端的 agent_id
                 let frontendAgentId = "openclaw-main";
                 if (cs.agentId === "jianshen") frontendAgentId = "openclaw-jianshen";
 
                 return {
                   id: cs.key,
                   title: cs.customTitle || cs.title || cs.label || cs.displayName || "未命名会话",
-                  messages: [], // 消息按需实时拉取
+                  messages: [],
                   createdAt: cs.updatedAt
                     ? new Date(cs.updatedAt).toISOString()
                     : new Date().toISOString(),
@@ -248,7 +249,7 @@ export default function App() {
           console.error("Gateway sessions unreachable:", clawErr);
         }
 
-        // ── 3. 排序：最新在前 ──
+        // ── 3. 排序 ──
         allSessions.sort(
           (a, b) =>
             new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
@@ -287,24 +288,20 @@ export default function App() {
       setCurrentAgentId(selectedSess.agentId);
     }
 
-    // 判断是否为 OpenClaw 远程会话
     const isRemote =
       AGENTS[selectedSess.agentId || ""]?.runtime === "openclaw" ||
       id.startsWith("agent:");
 
     if (isRemote) {
-      // ✅ 每次点击都实时向 Gateway 拉取最新聊天记录，直接覆盖
       try {
         const res = await fetch(
           `/api/sessions/${encodeURIComponent(id)}/history`,
         );
         if (res.ok) {
           const data = await res.json();
-          // v5.0 影子缓存：新格式 { source: "gateway"|"cache", messages: [...] }
           const rawMessages = data.messages || (Array.isArray(data) ? data : []);
           const historySource: string = data.source || "gateway";
 
-          // 检测离线降级：数据来源为 MySQL cache
           if (historySource === "cache") {
             setIsGatewayOffline(true);
           } else {
@@ -312,16 +309,12 @@ export default function App() {
           }
           const mappedMessages: Message[] = rawMessages.map(
             (item: any) => {
-              // Gateway 消息 content 可能是：字符串 / [{type:"text",text:"..."}] 数组 / null / undefined
               let content = "";
               const rawContent = item?.content;
 
               if (typeof rawContent === "string") {
-                // 用户消息：content 通常是纯字符串
                 content = rawContent;
               } else if (Array.isArray(rawContent) && rawContent.length > 0) {
-                // 助手消息：content 是内容块数组
-                // 优先级：text > thinking（截取前200字）> tool_use 名称
                 const textBlocks = rawContent
                   .filter((b: any) => b?.type === "text" && b?.text)
                   .map((b: any) => b.text);
@@ -329,7 +322,6 @@ export default function App() {
                 if (textBlocks.length > 0) {
                   content = textBlocks.join("\n");
                 } else {
-                  // 无 text 块时，从 thinking 或 toolCall 中提取摘要信息
                   const thinkingBlocks = rawContent
                     .filter((b: any) => b?.type === "thinking" && b?.thinking)
                     .map((b: any) => b.thinking);
@@ -347,7 +339,6 @@ export default function App() {
                 }
               }
 
-              // 时间戳处理：Gateway 返回 epoch 毫秒数
               const ts = item?.timestamp;
               const timeStr = ts
                 ? new Date(ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
@@ -374,7 +365,6 @@ export default function App() {
     }
   };
 
-  // 新建会话：OpenClaw Agent 生成 UUID session key，Hermes 走本地
   const handleCreateSession = async (agentId: string): Promise<void> => {
     return new Promise((resolve) => {
       setTimeout(async () => {
@@ -383,11 +373,9 @@ export default function App() {
 
         let sessionId: string;
         if (isOpenClaw) {
-          // OpenClaw: 生成 UUID session key，Gateway 在首条消息时自动创建
           const uuid = crypto.randomUUID
             ? crypto.randomUUID()
             : "nexus-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
-          // 格式对齐 Gateway session key: agent:<agent>:nexus:<uuid>
           const agentKey = agentId === "openclaw-main" ? "main" : agentId.replace("openclaw-", "");
           sessionId = `agent:${agentKey}:nexus:${uuid}`;
         } else {
@@ -411,9 +399,7 @@ export default function App() {
     });
   };
 
-  // 本地会话持久化（仅 Hermes 等本地 Agent，OpenClaw 以 Gateway 为 Source of Truth）
   const syncLocalSession = async (session: ChatSession) => {
-
     try {
       await fetch("/api/history", {
         method: "POST",
@@ -425,14 +411,11 @@ export default function App() {
     }
   };
 
-  // ── 会话重命名（写入 MySQL 持久化，瞬时更新前端状态）──
   const handleRenameSession = async (sessionId: string, newTitle: string) => {
-    // 1. 先本地即时刷新（用户体验优先）
     setSessions((prev) =>
       prev.map((s) => (s.id === sessionId ? { ...s, title: newTitle } : s)),
     );
 
-    // 2. 异步写入 MySQL
     try {
       const res = await fetch("/api/openclaw/sessions/rename", {
         method: "POST",
@@ -452,16 +435,13 @@ export default function App() {
     setActiveSessionId(null);
   };
 
-  // Active Session context object
   const activeSession = sessions.find((s) => s.id === activeSessionId);
 
-  // Triggering text submission
   const handleSubmitMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isGenerating || !activeSessionId || !activeSession)
       return;
     
-    // v5.0 离线只读：Gateway 离线时禁止发送
     if (isGatewayOffline) return;
 
     const userMessage: Message = {
@@ -471,13 +451,10 @@ export default function App() {
       timestamp: new Date().toLocaleTimeString(),
     };
 
-    // Append to messages list
     const updatedMessages = [...activeSession.messages, userMessage];
 
-    // Determine default dialog title
     let title = activeSession.title;
     if (activeSession.messages.length === 0) {
-      // First message defines session header text nicely
       title = input.length > 25 ? input.slice(0, 25) + "..." : input;
     }
 
@@ -487,18 +464,15 @@ export default function App() {
       messages: updatedMessages,
     };
 
-    // Update frontend state immediately for blazing fast responsive inputs
     setSessions((prev) =>
       prev.map((s) => (s.id === activeSessionId ? updatedSession : s)),
     );
     setInput("");
 
-    // 本地持久化同步（仅 Hermes 本地会话）
     if (AGENTS[currentAgentId]?.runtime !== "openclaw") {
       syncLocalSession(updatedSession);
     }
 
-    // Create a temporary placeholder message for SSE printing output
     const assistantPlaceholderId = "msg-assistant-" + Date.now();
     const assistantPlaceholder: Message = {
       id: assistantPlaceholderId,
@@ -517,10 +491,9 @@ export default function App() {
     );
 
     setIsGenerating(true);
-    resetRetry(); // Reset before new attempt
+    resetRetry();
 
     try {
-      // Send fetch POST to client server side proxy
       const response = await executeWithRetry(() => {
         return fetch("/api/chat", {
           method: "POST",
@@ -532,7 +505,6 @@ export default function App() {
             })),
             temperature: 0.7,
             agent_id: currentAgentId,
-            // ✅ session_id 传递给 Gateway，实现双端消息追加到同一会话
             session_id: activeSessionId,
           }),
         });
@@ -553,15 +525,12 @@ export default function App() {
       let buffer = "";
       let accumulatedText = "";
 
-      // Stream evaluation loop
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
-
-        // Retain the final incomplete chunk segment in our buffer
         buffer = lines.pop() || "";
 
         for (const line of lines) {
@@ -575,7 +544,6 @@ export default function App() {
             try {
               const parsed = JSON.parse(rawData);
 
-              // Capture server side VM connection diagnostics returned from SSE proxy
               if (parsed.error) {
                 accumulatedText += `\n\n**[Connection Diagnostics Info]**:\n${parsed.error}`;
                 setSessions((prev) =>
@@ -594,7 +562,6 @@ export default function App() {
                 continue;
               }
 
-              // Normal completion tokens aggregation
               const delta = parsed.choices?.[0]?.delta?.content;
               if (delta) {
                 accumulatedText += delta;
@@ -613,13 +580,12 @@ export default function App() {
                 );
               }
             } catch (jsonErr) {
-              // Gracefully bypass line-splitting JSON evaluation errors on partial chunks
+              // bypass partial JSON parse errors
             }
           }
         }
       }
 
-      // Finish parsing residue buffer if any exists
       if (buffer.trim().startsWith("data: ")) {
         const trimmedData = buffer.trim().slice(6);
         if (trimmedData !== "[DONE]") {
@@ -633,7 +599,6 @@ export default function App() {
         }
       }
 
-      // Synced finish state
       const finalCompletedSession: ChatSession = {
         ...updatedSession,
         messages: [
@@ -655,8 +620,7 @@ export default function App() {
       }
     } catch (err: any) {
       console.error("Dialogue failure:", err);
-      // Construct detailed troubleshooting context directly within the conversation window
-      const errorFallbackText = `\n\n❌ **对端网关桥接离线**\n\n无法成功将您的提示指令转发到位于 \`100.83.118.16:8000\` 的远程大语言模型服务器。\n\n* **诊断详情信息**: \`${err?.message || err}\`\n* **推荐排查指引**: 请确认您的 Tailscale 隧道客户端连接状态是否通畅。如有必要，可点击右侧 Bento 快捷指令面板中的 **“重启 Llama 模型服务”** 按钮来重新载入对端服务进程。`;
+      const errorFallbackText = `\n\n❌ **对端网关桥接离线**\n\n无法成功将您的提示指令转发到位于 \`100.83.118.16:8000\` 的远程大语言模型服务器。\n\n* **诊断详情信息**: \`${err?.message || err}\`\n* **推荐排查指引**: 请确认您的 Tailscale 隧道客户端连接状态是否通畅。如有必要，可点击右侧 Bento 快捷指令面板中的 **"重启 Llama 模型服务"** 按钮来重新载入对端服务进程。`;
 
       setSessions((prev) =>
         prev.map((s) => {
@@ -673,7 +637,6 @@ export default function App() {
       );
     } finally {
       setIsGenerating(false);
-      // Focus element
       setTimeout(() => inputRef.current?.focus(), 150);
     }
   };
@@ -687,12 +650,13 @@ export default function App() {
 
   return (
     <div
-      className={`flex h-screen w-full overflow-hidden transition-colors duration-500 bg-[#fbfbfd] dark:bg-[#09090b] text-[#1d1d1f] dark:text-[#f5f5f7] font-sans selection:bg-blue-500/20 relative`}
+      className={`flex h-screen w-full overflow-hidden transition-all duration-500 bg-[#ffe6bf] dark:bg-[#110e0b] bg-gradient-to-tr from-[#ffe6bf]/80 via-[#e2fbeb]/70 to-[#c7f4ff]/80 dark:from-[#110e0b]/50 dark:via-[#0c0d10]/95 dark:to-[#0a1012]/50 text-[#1d1d1f] dark:text-[#f5f5f7] font-sans selection:bg-blue-500/20 relative`}
     >
-      {/* Dynamic blurred organic gradient circles beneath the premium frosted elements */}
-      <div className="absolute inset-0 pointer-events-none overflow-hidden opacity-30 dark:opacity-15 z-0 select-none">
-        <div className="absolute top-[45%] left-[55%] -translate-x-1/2 w-[45%] h-[45%] rounded-full bg-purple-200 dark:bg-purple-800/20 blur-[110px]" />
-        <div className="absolute -bottom-[20%] -right-[10%] w-[55%] h-[55%] rounded-full bg-emerald-250 dark:bg-emerald-900/10 blur-[120px]" />
+      {/* Dynamic blurred organic gradient circles */}
+      <div className="absolute inset-0 pointer-events-none overflow-hidden opacity-[0.95] dark:opacity-40 z-0 select-none">
+        <div className="absolute top-[-10%] left-[-5%] w-[65%] h-[65%] rounded-full bg-amber-200/50 dark:bg-amber-500/10 blur-[130px] animate-pulse" style={{ animationDuration: "10s" }} />
+        <div className="absolute top-[15%] left-[30%] w-[60%] h-[60%] rounded-full bg-emerald-200/50 dark:bg-emerald-500/10 blur-[140px] animate-pulse" style={{ animationDuration: "12s", animationDelay: "2s" }} />
+        <div className="absolute bottom-[-10%] right-[-5%] w-[60%] h-[65%] rounded-full bg-cyan-200/50 dark:bg-sky-500/10 blur-[130px]" />
       </div>
 
       {/* 1. Left Sidebar Component */}
@@ -702,29 +666,87 @@ export default function App() {
           activeSessionId={activeSessionId}
           currentAgentId={currentAgentId}
           isDarkMode={isDarkMode}
+          isAdmin={isAdmin}
           openclawAgents={openclawAgents}
           onToggleDarkMode={() => setIsDarkMode(!isDarkMode)}
           onAgentSwitch={handleAgentSwitch}
           onSelectSession={handleSelectSession}
           onCreateSession={handleCreateSession}
           onRenameSession={handleRenameSession}
-          isAdmin={isAdmin}
           onOpenWizard={() => setIsWizardOpen(true)}
         />
       </div>
 
+      {/* Mobile Sidebar Overlay */}
+      <AnimatePresence>
+        {isMobileSidebarOpen && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm md:hidden"
+              onClick={() => setIsMobileSidebarOpen(false)}
+            />
+            <motion.div
+              initial={{ x: "-100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "-100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              className="fixed inset-y-0 left-0 z-50 w-72 shadow-2xl md:hidden"
+            >
+              <Sidebar
+                sessions={sessions}
+                activeSessionId={activeSessionId}
+                currentAgentId={currentAgentId}
+                isDarkMode={isDarkMode}
+                isAdmin={isAdmin}
+                openclawAgents={openclawAgents}
+                onToggleDarkMode={() => setIsDarkMode(!isDarkMode)}
+                onAgentSwitch={(id) => {
+                  handleAgentSwitch(id);
+                  setIsMobileSidebarOpen(false);
+                }}
+                onSelectSession={(id) => {
+                  handleSelectSession(id);
+                  setIsMobileSidebarOpen(false);
+                }}
+                onCreateSession={async (id) => {
+                  await handleCreateSession(id);
+                  setIsMobileSidebarOpen(false);
+                }}
+                onRenameSession={async (id, newTitle) => {
+                  await handleRenameSession(id, newTitle);
+                  setIsMobileSidebarOpen(false);
+                }}
+                onOpenWizard={() => {
+                  setIsWizardOpen(true);
+                  setIsMobileSidebarOpen(false);
+                }}
+              />
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
       {/* Main Container */}
-      <div className="flex-1 flex flex-col min-w-0 h-full relative z-10 bg-white/30 dark:bg-zinc-950/20">
-        {/* Dynamic header bar containing connection credentials */}
-        <header className="min-h-[4rem] py-2 md:py-0 flex flex-wrap items-center justify-between px-4 md:px-8 gap-y-2 gap-x-4 bg-white/30 dark:bg-zinc-950/20 backdrop-blur-md border-b border-zinc-200/50 dark:border-zinc-800/40 z-10 select-none">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2.5 pl-1">
+      <div className="flex-1 flex flex-col min-w-0 h-full relative z-10 bg-white/10 dark:bg-zinc-950/20 backdrop-blur-[6px]">
+        {/* Dynamic header bar */}
+        <header className="min-h-[4rem] py-2 md:py-0 flex flex-wrap items-center justify-between px-4 md:px-8 gap-y-2 gap-x-4 bg-white/20 dark:bg-[#131118]/30 backdrop-blur-md border-b border-zinc-200/20 dark:border-zinc-800/20 z-10 select-none">
+          <div className="flex items-center flex-wrap gap-1 md:gap-3">
+            <button
+              onClick={() => setIsMobileSidebarOpen(true)}
+              className="md:hidden mr-1 p-2 -ml-2 rounded-md text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <div className="flex items-center gap-2 md:gap-2.5 pl-1">
               <div
                 className="flex items-center justify-center w-6 h-6 rounded-md shadow-sm border border-black/5 dark:border-white/5"
                 style={{
                   backgroundColor: AGENTS[currentAgentId]?.color + "20",
                   color: AGENTS[currentAgentId]?.color,
-                }} // 20 is approx 12% opacity in hex
+                }}
               >
                 <span className="text-sm leading-none">
                   {AGENTS[currentAgentId]?.emoji}
@@ -772,7 +794,7 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Small tab switcher for mobile/desktop layout fluidity */}
+            {/* Small tab switcher for mobile */}
             <div className="flex md:hidden bg-zinc-100 dark:bg-zinc-900 rounded-lg p-0.5 border border-zinc-200/40 dark:border-zinc-805/40">
               <button
                 onClick={() => setActiveTab("chat")}
@@ -796,7 +818,7 @@ export default function App() {
               </button>
             </div>
 
-            {/* General latency checker simulation */}
+            {/* Network status + admin logout */}
             <div className="flex items-center gap-3">
               {isAdmin && (
                 <button
@@ -814,7 +836,7 @@ export default function App() {
           </div>
         </header>
 
-        {/* Modal for Network Errors */}
+        {/* Network Error Modal */}
         <AnimatePresence>
           {showNetworkErrorModal && networkError && (
             <motion.div
@@ -890,16 +912,18 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        {/* Dynamic content core (Tab switching on mobile, multi-column desktop bento layout) */}
+        {/* Dynamic content core */}
         <div className="flex-1 flex overflow-hidden">
           {/* Chat Panel Column */}
           <div
-            className={`flex-1 flex flex-col justify-between h-full bg-white dark:bg-[#0e0e11] ${
+            className={`flex-1 flex flex-col justify-between h-full bg-white/20 dark:bg-[#0c0c0e]/30 backdrop-blur-md ${
               activeTab === "chat" ? "flex" : "hidden md:flex"
             }`}
           >
             {AGENTS[currentAgentId]?.placeholder ? (
-              <AgentPlaceholder agentName={AGENTS[currentAgentId]?.name || "Agent"} />
+              <AgentPlaceholder
+                agentName={AGENTS[currentAgentId]?.name || "Agent"}
+              />
             ) : (
               <>
                 {/* Scroll Zone */}
@@ -907,7 +931,7 @@ export default function App() {
                   ref={chatContainerRef}
                   className="flex-1 overflow-y-auto px-6 py-6 space-y-6 scrollbar-thin"
                 >
-                  {/* Optional connection state banner */}
+                  {/* Gateway Offline Banner */}
                   {isGatewayOffline && (
                     <div className="p-4 rounded-xl bg-amber-50/80 dark:bg-amber-950/10 border-2 border-amber-300/60 dark:border-amber-700/40 text-amber-800 dark:text-amber-300 text-[12px] flex gap-3 leading-relaxed shadow-md animate-pulse">
                       <span className="text-lg shrink-0">📡</span>
@@ -919,6 +943,8 @@ export default function App() {
                       </div>
                     </div>
                   )}
+
+                  {/* Info banner */}
                   <div className="p-3.5 rounded-xl bg-amber-50/30 dark:bg-amber-950/5 border border-amber-100/10 dark:border-amber-950/10 text-amber-800 dark:text-amber-400 text-[11px] flex gap-3 leading-relaxed shadow-3xs">
                     <Info className="w-4 h-4 shrink-0 text-amber-500 mt-0.5" />
                     <div className="font-sans font-medium">
@@ -1008,42 +1034,23 @@ export default function App() {
                                   <span>{msg.timestamp}</span>
                                 </div>
 
-                                <div
-                                  style={{
-                                    borderLeftColor: !isUser
-                                      ? msgAgent?.color
-                                      : undefined,
-                                    borderLeftWidth: !isUser
-                                      ? "2px"
-                                      : undefined,
-                                  }}
-                                  className={`px-4.5 py-3 rounded-2xl border text-xs leading-relaxed ${
-                                    isUser
-                                      ? "bg-zinc-50 dark:bg-zinc-900/40 border-zinc-100/30 dark:border-zinc-850/10 text-zinc-800 dark:text-zinc-250 shadow-3xs"
-                                      : "bg-white dark:bg-[#16161b] border-[#e4e4e7]/20 dark:border-zinc-800/20 text-zinc-800 dark:text-zinc-200 shadow-xs"
-                                  }`}
-                                >
-                                  <MarkdownRenderer content={msg.content} />
-                                  {isGenerating && !msg.content && (
-                                    <div className="flex items-center gap-1.5 py-1 text-zinc-400 text-xs font-mono select-none">
-                                      <span
-                                        className="h-1.5 w-1.5 bg-blue-500 rounded-full animate-bounce"
-                                        style={{ animationDelay: "0ms" }}
-                                      />
-                                      <span
-                                        className="h-1.5 w-1.5 bg-blue-500 rounded-full animate-bounce"
-                                        style={{ animationDelay: "150ms" }}
-                                      />
-                                      <span
-                                        className="h-1.5 w-1.5 bg-blue-500 rounded-full animate-bounce"
-                                        style={{ animationDelay: "300ms" }}
-                                      />
-                                      <span className="ml-1 text-[10px]">
-                                        正在解析响应 data stream...
-                                      </span>
+                                {isUser ? (
+                                  <div className="px-6 py-4.5 rounded-3xl border border-white/60 dark:border-white/10 bg-white/80 dark:bg-[#1e1c26]/60 backdrop-blur-md text-[13px] leading-relaxed text-zinc-800 dark:text-zinc-100 shadow-[0_4px_20px_-1px_rgba(0,0,0,0.02)] hover:shadow-[0_4px_24px_rgba(0,0,0,0.05)] hover:border-zinc-300/70 dark:hover:border-zinc-700/50 transition-all duration-300">
+                                    <MarkdownRenderer content={msg.content} />
+                                  </div>
+                                ) : !msg.content && isGenerating ? (
+                                  /* Loading state with gorgeous AIGeneratingState */
+                                  <div className="space-y-4 w-full flex-col flex items-start max-w-xl">
+                                    <AIGeneratingState agentName={msgAgent?.name || "Hermes"} />
+                                  </div>
+                                ) : (
+                                  /* Standard Assistant message with glassmorphic border */
+                                  <div className="space-y-3 w-full max-w-xl">
+                                    <div className="px-6 py-4.5 rounded-3xl border border-white/80 dark:border-white/10 text-[13px] leading-relaxed bg-white/90 dark:bg-[#131118]/80 backdrop-blur-md text-zinc-800 dark:text-zinc-200 shadow-[0_4px_24px_-1px_rgba(0,0,0,0.02)] hover:shadow-[0_8px_30px_rgba(0,0,0,0.12)] hover:border-zinc-300 dark:hover:border-zinc-700/60 transition-all duration-300">
+                                      <MarkdownRenderer content={msg.content} />
                                     </div>
-                                  )}
-                                </div>
+                                  </div>
+                                )}
                               </div>
                             </motion.div>
                           );
@@ -1062,14 +1069,12 @@ export default function App() {
                       </span>
                     </div>
                   ) : isGatewayOffline ? (
-                    /* v5.0 离线只读模式：禁用输入 */
                     <div className="flex items-center justify-center py-4 select-none">
                       <span className="text-sm font-medium text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 px-6 py-2.5 rounded-full border border-amber-200/60 dark:border-amber-800/40">
                         📡 Gateway 离线 · 只读模式 — 发送消息功能已暂停
                       </span>
                     </div>
                   ) : !isAdmin ? (
-                    /* 🔐 游客模式：管理员登录入口 */
                     <div className="max-w-md mx-auto">
                       <form onSubmit={handleLogin} className="relative flex flex-col gap-3">
                         <div className="relative flex items-center bg-white dark:bg-[#16161b] border border-zinc-200/50 dark:border-zinc-800/40 focus-within:border-zinc-300 dark:focus-within:border-zinc-700/80 focus-within:ring-4 focus-within:ring-zinc-900/5 dark:focus-within:ring-zinc-100/5 shadow-md rounded-2xl transition duration-300 px-5 py-2">
@@ -1108,7 +1113,7 @@ export default function App() {
                       onSubmit={handleSubmitMessage}
                       className="max-w-2xl mx-auto relative group"
                     >
-                      <div className="relative flex items-center bg-white dark:bg-[#16161b] border border-[#e4e4e7]/50 dark:border-zinc-800/40 focus-within:border-zinc-300 dark:focus-within:border-zinc-700/80 focus-within:ring-4 focus-within:ring-zinc-900/5 dark:focus-within:ring-zinc-100/5 shadow-md rounded-2xl transition duration-300 px-5 py-2">
+                      <div className="relative flex items-center bg-white/70 dark:bg-[#131118]/85 backdrop-blur-md border border-zinc-200/40 dark:border-zinc-800/40 focus-within:border-zinc-350 dark:focus-within:border-zinc-700/80 focus-within:ring-4 focus-within:ring-zinc-900/5 dark:focus-within:ring-zinc-100/5 shadow-2xs rounded-2xl transition duration-300 px-5 py-2">
                         <textarea
                           ref={inputRef}
                           rows={1}
@@ -1131,7 +1136,6 @@ export default function App() {
                           }
                         />
 
-                        {/* Submission triggers */}
                         <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2 select-none">
                           <motion.button
                             type="submit"
@@ -1222,11 +1226,10 @@ export default function App() {
 
           {/* 5. Right Telemetry Bento Column Layout */}
           <div
-            className={`w-full md:w-96 shrink-0 border-l border-zinc-200/50 dark:border-zinc-800/40 p-5 bg-zinc-100/40 dark:bg-zinc-950/10 space-y-5 h-full overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-250 dark:scrollbar-thumb-zinc-850 select-none ${
+            className={`w-full md:w-96 shrink-0 border-l border-zinc-200/20 dark:border-zinc-800/20 p-5 bg-white/10 dark:bg-[#131118]/25 backdrop-blur-md space-y-5 h-full overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-250 dark:scrollbar-thumb-zinc-850 select-none ${
               activeTab === "telemetry" ? "block" : "hidden lg:block"
             }`}
           >
-            {/* Header section representing the Bento Hub metadata */}
             <div className="flex items-center justify-between pb-2 border-b border-zinc-200/50 dark:border-zinc-800/40">
               <div className="flex items-center gap-2">
                 <Activity className="w-4 h-4 text-blue-500 animate-pulse" />
@@ -1239,13 +1242,9 @@ export default function App() {
               </span>
             </div>
 
-            {/* Mac Hardware Telemetry widget */}
             <HardwareTelemetryCard />
-
-            {/* Quick Actions grid widget shortcuts */}
             <QuickActionsCard />
 
-            {/* Bottom status layout flow */}
             <div className="bg-white/50 dark:bg-zinc-900/40 p-4.5 border border-zinc-200/50 dark:border-zinc-800/50 rounded-2xl">
               <div className="flex items-start gap-3">
                 <Layers className="w-4 h-4 text-purple-500 mt-0.5 shrink-0" />
@@ -1264,13 +1263,13 @@ export default function App() {
           </div>
         </div>
 
-        {/* Floating background trace bar for complete full-screen routing metrics */}
+        {/* Floating background trace bar */}
         <div className="hidden xl:block bg-zinc-100/50 dark:bg-zinc-950/40 border-t border-zinc-200/30 dark:border-zinc-900/10 px-6 py-2">
           <NetworkStatusBar />
         </div>
       </div>
 
-      {/* Render Agent Wizard */}
+      {/* Agent Wizard */}
       <AnimatePresence>
         {isWizardOpen && (
           <AgentWizard
@@ -1288,7 +1287,6 @@ export default function App() {
                   setForceUpdate((p) => p + 1);
                   setIsWizardOpen(false);
 
-                  // Setup floating Green success Toast notice
                   const toastId = Date.now().toString();
                   setToast({
                     id: toastId,
@@ -1306,7 +1304,7 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Floating success feedback Toast */}
+      {/* Toast */}
       <AnimatePresence>
         {toast && (
           <motion.div

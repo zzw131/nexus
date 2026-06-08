@@ -1,7 +1,7 @@
-import React from 'react';
-import { createPortal } from 'react-dom';
-import { motion, AnimatePresence } from 'motion/react';
-import { AlertTriangle } from 'lucide-react';
+import React from "react";
+import { createPortal } from "react-dom";
+import { motion, AnimatePresence } from "motion/react";
+import { AlertTriangle } from "lucide-react";
 
 interface ConfirmationModalProps {
   isOpen: boolean;
@@ -12,13 +12,20 @@ interface ConfirmationModalProps {
   onCancel: () => void;
 }
 
-export function ConfirmationModal({ isOpen, title, message, confirmText, onConfirm, onCancel }: ConfirmationModalProps) {
+export function ConfirmationModal({
+  isOpen,
+  title,
+  message,
+  confirmText,
+  onConfirm,
+  onCancel,
+}: ConfirmationModalProps) {
   if (!isOpen) return null;
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div 
-        className="absolute inset-0 bg-black/40 backdrop-blur-sm" 
+      <div
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
         onClick={onCancel}
       />
       <motion.div
@@ -55,6 +62,6 @@ export function ConfirmationModal({ isOpen, title, message, confirmText, onConfi
         </div>
       </motion.div>
     </div>,
-    document.body
+    document.body,
   );
 }
