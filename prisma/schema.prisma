@@ -17,9 +17,20 @@ model Workspace {
   sessions  Session[]
 }
 
+model User {
+  id        Int       @id @default(autoincrement())
+  username  String    @unique @db.VarChar(255)
+  role      String    @default("GUEST") @db.VarChar(50)
+  createdAt DateTime  @default(now())
+  sessions  Session[]
+}
+
 model Session {
-  id          String    @id @db.VarChar(255)
-  customTitle String?   @db.VarChar(255)
-  workspaceId Int?
-  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
+  id           String    @id @db.VarChar(255)
+  customTitle  String?   @db.VarChar(255)
+  historyCache Json?
+  workspaceId  Int?
+  userId       Int?
+  workspace    Workspace? @relation(fields: [workspaceId], references: [id])
+  user         User?      @relation(fields: [userId], references: [id])
 }

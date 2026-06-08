@@ -59,6 +59,8 @@ export default function App() {
   const [toast, setToast] = useState<{ id: string; message: string } | null>(
     null,
   );
+  // v5.0 影子缓存：Gateway 离线降级标记
+  const [isGatewayOffline, setIsGatewayOffline] = useState<boolean>(false);
 
   const { executeWithRetry, isRetrying, retryCount, resetRetry } = useRetry();
 
@@ -73,6 +75,7 @@ export default function App() {
       const data = await res.json();
       if (data.reachable) {
         setNetworkError(null);
+        setIsGatewayOffline(false); // Gateway 恢复，清除离线标记
       } else {
         setNetworkError("MacBook 不可达，请检查网络连接");
       }
@@ -172,7 +175,7 @@ export default function App() {
 
         // ── 2. OpenClaw 会话：从 Gateway 100% 实时拉取（不读本地 history.json）──
         try {
-          const clawRes = await fetch("/api/sessions");
+          const clawRes = await fetch("/api/openclaw/sessions");
           if (clawRes.ok) {
             const clawSessions = await clawRes.json();
             const mappedClawSessions: ChatSession[] = clawSessions.map(
@@ -183,7 +186,7 @@ export default function App() {
 
                 return {
                   id: cs.key,
-                  title: cs.label || cs.displayName || "未命名会话",
+                  title: cs.customTitle || cs.title || cs.label || cs.displayName || "未命名会话",
                   messages: [], // 消息按需实时拉取
                   createdAt: cs.updatedAt
                     ? new Date(cs.updatedAt).toISOString()
@@ -249,8 +252,17 @@ export default function App() {
           `/api/sessions/${encodeURIComponent(id)}/history`,
         );
         if (res.ok) {
-          const history = await res.json();
-          const rawMessages = Array.isArray(history) ? history : [];
+          const data = await res.json();
+          // v5.0 影子缓存：新格式 { source: "gateway"|"cache", messages: [...] }
+          const rawMessages = data.messages || (Array.isArray(data) ? data : []);
+          const historySource: string = data.source || "gateway";
+
+          // 检测离线降级：数据来源为 MySQL cache
+          if (historySource === "cache") {
+            setIsGatewayOffline(true);
+          } else {
+            setIsGatewayOffline(false);
+          }
           const mappedMessages: Message[] = rawMessages.map(
             (item: any) => {
               // Gateway 消息 content 可能是：字符串 / [{type:"text",text:"..."}] 数组 / null / undefined
@@ -401,6 +413,9 @@ export default function App() {
     e.preventDefault();
     if (!input.trim() || isGenerating || !activeSessionId || !activeSession)
       return;
+    
+    // v5.0 离线只读：Gateway 离线时禁止发送
+    if (isGatewayOffline) return;
 
     const userMessage: Message = {
       id: "msg-user-" + Date.now(),
@@ -689,6 +704,10 @@ export default function App() {
                   <AlertTriangle className="w-4 h-4" />
                   异常详情
                 </button>
+              ) : isGatewayOffline ? (
+                <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 ml-2 rounded-full text-[13px] font-bold font-sans border shadow-md bg-amber-500 dark:bg-amber-600 border-amber-600 dark:border-amber-700 text-white animate-pulse">
+                  📡 离线只读
+                </div>
               ) : AGENTS[currentAgentId]?.active &&
                 !AGENTS[currentAgentId]?.placeholder ? (
                 <div className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 ml-1 rounded-full text-[10px] font-mono border bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-200/30 dark:border-emerald-900/30 text-emerald-600 dark:text-emerald-400">
@@ -831,6 +850,17 @@ export default function App() {
                   className="flex-1 overflow-y-auto px-6 py-6 space-y-6 scrollbar-thin"
                 >
                   {/* Optional connection state banner */}
+                  {isGatewayOffline && (
+                    <div className="p-4 rounded-xl bg-amber-50/80 dark:bg-amber-950/10 border-2 border-amber-300/60 dark:border-amber-700/40 text-amber-800 dark:text-amber-300 text-[12px] flex gap-3 leading-relaxed shadow-md animate-pulse">
+                      <span className="text-lg shrink-0">📡</span>
+                      <div className="font-sans font-semibold space-y-1">
+                        <p>Gateway 连接失败，当前处于<strong>离线只读模式</strong></p>
+                        <p className="text-[11px] font-normal text-amber-600 dark:text-amber-400/80">
+                          聊天记录来自本地影子缓存（MySQL），无法发送新消息。请检查 MacBook Tailscale 连接状态。
+                        </p>
+                      </div>
+                    </div>
+                  )}
                   <div className="p-3.5 rounded-xl bg-amber-50/30 dark:bg-amber-950/5 border border-amber-100/10 dark:border-amber-950/10 text-amber-800 dark:text-amber-400 text-[11px] flex gap-3 leading-relaxed shadow-3xs">
                     <Info className="w-4 h-4 shrink-0 text-amber-500 mt-0.5" />
                     <div className="font-sans font-medium">
@@ -971,6 +1001,13 @@ export default function App() {
                     <div className="flex items-center justify-center py-4 select-none">
                       <span className="text-sm font-medium text-zinc-500 dark:text-zinc-500/80 bg-zinc-100 dark:bg-zinc-900/50 px-6 py-2.5 rounded-full border border-zinc-200/50 dark:border-zinc-800/50">
                         🔒 请在左侧列表中选择或新建一个会话以开始
+                      </span>
+                    </div>
+                  ) : isGatewayOffline ? (
+                    /* v5.0 离线只读模式：禁用输入 */
+                    <div className="flex items-center justify-center py-4 select-none">
+                      <span className="text-sm font-medium text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 px-6 py-2.5 rounded-full border border-amber-200/60 dark:border-amber-800/40">
+                        📡 Gateway 离线 · 只读模式 — 发送消息功能已暂停
                       </span>
                     </div>
                   ) : (

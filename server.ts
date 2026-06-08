@@ -147,7 +147,7 @@ const GATEWAY_PORT = 18789;
 const GATEWAY_TOKEN = "0e41fa7f04c5cca00fa7d492e60fdf75769d8fc99cb218f7";
 
 // 通用 helper: 调用 Gateway /tools/invoke，自动解包 content[0].text
-function gatewayInvoke(tool: string, args: Record<string, any> = {}): Promise<any> {
+function gatewayInvoke(tool: string, args: Record<string, any> = {}, timeoutMs = 10000): Promise<any> {
   return new Promise((resolve, reject) => {
     const postData = JSON.stringify({ tool, args });
     const hreq = http.request({
@@ -160,7 +160,7 @@ function gatewayInvoke(tool: string, args: Record<string, any> = {}): Promise<an
         "Authorization": `Bearer ${GATEWAY_TOKEN}`,
         "Content-Length": Buffer.byteLength(postData),
       },
-      timeout: 10000,
+      timeout: timeoutMs,
     }, (hres) => {
       let body = "";
       hres.on("data", (chunk: Buffer) => { body += chunk.toString(); });
@@ -214,17 +214,58 @@ app.get("/api/sessions", async (req, res) => {
   }
 });
 
+// ── v5.0 影子缓存：Gateway 超时 & MySQL 离线降级 & 异步旁路落库 ──
+const GATEWAY_HISTORY_TIMEOUT = 5000; // 5 秒超时
+
 // GET /api/sessions/:sessionKey/history — 拉取指定会话的完整聊天记录
 app.get("/api/sessions/:sessionKey/history", async (req, res) => {
   try {
     const { sessionKey } = req.params;
     if (!sessionKey) return res.status(400).json({ error: "Missing sessionKey" });
-    const result = await gatewayInvoke("sessions_history", {
-      sessionKey: decodeURIComponent(sessionKey),
-    });
-    // sessions_history 返回 { sessionKey, messages: [...] }
-    const messages = result?.messages || (Array.isArray(result) ? result : []);
-    res.json(messages);
+
+    const decodedKey = decodeURIComponent(sessionKey);
+    let source: "gateway" | "cache" = "gateway";
+    let messages: any[] = [];
+
+    // ── 第 1 层：尝试 Gateway 实时拉取（5 秒超时）──
+    try {
+      const result = await gatewayInvoke("sessions_history", {
+        sessionKey: decodedKey,
+      }, GATEWAY_HISTORY_TIMEOUT);
+
+      messages = result?.messages || (Array.isArray(result) ? result : []);
+      source = "gateway";
+
+      // ── 异步旁路落库（不阻塞响应）──
+      if (messages.length > 0) {
+        prisma.session.upsert({
+          where: { id: decodedKey },
+          update: { historyCache: messages },
+          create: { id: decodedKey, historyCache: messages },
+        }).catch((e: any) => {
+          console.error("[history-cache] async upsert failed:", e.message);
+        });
+      }
+    } catch (gatewayErr: any) {
+      // ── 第 2 层：Gateway 失败/超时 → MySQL 离线降级 ──
+      console.error("[history-cache] Gateway unreachable, falling back to MySQL cache:", gatewayErr.message);
+      source = "cache";
+
+      try {
+        const cached = await prisma.session.findUnique({
+          where: { id: decodedKey },
+          select: { historyCache: true },
+        });
+        if (cached?.historyCache && Array.isArray(cached.historyCache)) {
+          messages = cached.historyCache as any[];
+        }
+      } catch (dbErr: any) {
+        console.error("[history-cache] MySQL fallback also failed:", dbErr.message);
+        // 两层都失败 → 返回空数组，前端展示离线提示
+      }
+    }
+
+    res.json({ source, messages });
   } catch (err: any) {
     console.error("Gateway sessions_history error:", err.message);
     res.status(502).json({ error: "Gateway history unreachable: " + (err.message || err) });
@@ -243,6 +284,12 @@ app.get("/api/openclaw/sessions", async (req, res) => {
   try {
     const result = await gatewayInvoke("sessions_list", {});
     rawPayload = result?.sessions || (Array.isArray(result) ? result : []);
+    
+    // 过滤掉底层隐形任务记录（subagent / cron 会话不展示）
+    rawPayload = rawPayload.filter((s: any) => {
+      const key = s.key || "";
+      return !key.includes(":subagent:") && !key.includes(":cron:");
+    });
   } catch (err: any) {
     console.error("[openclaw/sessions] Gateway unreachable:", err.message);
     return res.status(502).json({ error: "Gateway unreachable: " + err.message });
