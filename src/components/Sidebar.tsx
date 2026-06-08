@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { AGENTS, ChatSession, Agent } from "../types";
 import { motion, AnimatePresence } from "motion/react";
+import RenameSessionModal from "./RenameSessionModal";
 
 interface SidebarProps {
   sessions: ChatSession[];
@@ -54,6 +55,7 @@ export default function Sidebar({
     {},
   );
   const [creatingAgentId, setCreatingAgentId] = useState<string | null>(null);
+  const [renamingSession, setRenamingSession] = useState<{ id: string; title: string } | null>(null);
 
   // Initialize expanded groups based on active agents or specific conditions
   useEffect(() => {
@@ -286,10 +288,7 @@ export default function Sidebar({
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   e.preventDefault();
-                                  const newName = window.prompt("请输入新名称", sess.title || "");
-                                  if (newName && newName.trim()) {
-                                    onRenameSession(sess.id, newName.trim());
-                                  }
+                                  setRenamingSession({ id: sess.id, title: sess.title || "" });
                                 }}
                                 className="ml-auto shrink-0 p-0.5 rounded opacity-0 group-hover/item:opacity-100 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-all cursor-pointer"
                                 title="重命名"
@@ -324,6 +323,19 @@ export default function Sidebar({
             </button>
           </div>
         </div>
+
+        {/* 重命名弹窗 */}
+        <RenameSessionModal
+          isOpen={renamingSession !== null}
+          sessionName={renamingSession?.title || ""}
+          onClose={() => setRenamingSession(null)}
+          onConfirm={(newName) => {
+            if (renamingSession && onRenameSession) {
+              onRenameSession(renamingSession.id, newName);
+            }
+            setRenamingSession(null);
+          }}
+        />
 
         <div className="p-4 bg-transparent flex flex-col gap-3 select-none shrink-0 border-t border-zinc-200/30 dark:border-zinc-800/30">
           <button
