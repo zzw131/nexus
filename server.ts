@@ -153,6 +153,8 @@ const GATEWAY_TOKEN = "0e41fa7f04c5cca00fa7d492e60fdf75769d8fc99cb218f7";
 // 通用 helper: 调用 Gateway /tools/invoke，自动解包 content[0].text
 function gatewayInvoke(tool: string, args: Record<string, any> = {}, timeoutMs = 10000): Promise<any> {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const done = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
     const postData = JSON.stringify({ tool, args });
     const hreq = http.request({
       hostname: GATEWAY_HOST,
@@ -169,29 +171,31 @@ function gatewayInvoke(tool: string, args: Record<string, any> = {}, timeoutMs =
       let body = "";
       hres.on("data", (chunk: Buffer) => { body += chunk.toString(); });
       hres.on("end", () => {
-        try {
-          const data = JSON.parse(body);
-          if (!data.ok) {
-            reject(new Error(data.error?.message || "Gateway invoke failed"));
-            return;
-          }
-          // Gateway 工具返回值可能包在 result.content[0].text JSON 字符串中
-          let result = data.result;
-          if (result?.content?.[0]?.type === "text" && result.content[0].text) {
-            try {
-              result = JSON.parse(result.content[0].text);
-            } catch {
-              // 不是 JSON 则保持原样
+        done(() => {
+          try {
+            const data = JSON.parse(body);
+            if (!data.ok) {
+              reject(new Error(data.error?.message || "Gateway invoke failed"));
+              return;
             }
+            // Gateway 工具返回值可能包在 result.content[0].text JSON 字符串中
+            let result = data.result;
+            if (result?.content?.[0]?.type === "text" && result.content[0].text) {
+              try {
+                result = JSON.parse(result.content[0].text);
+              } catch {
+                // 不是 JSON 则保持原样
+              }
+            }
+            resolve(result);
+          } catch (e) {
+            reject(new Error("Invalid Gateway response"));
           }
-          resolve(result);
-        } catch (e) {
-          reject(new Error("Invalid Gateway response"));
-        }
+        });
       });
     });
-    hreq.on("error", (err) => reject(err));
-    hreq.on("timeout", () => { hreq.destroy(); reject(new Error("Gateway timeout")); });
+    hreq.on("error", (err) => done(() => reject(err)));
+    hreq.on("timeout", () => done(() => { hreq.destroy(); reject(new Error("Gateway timeout")); }));
     hreq.write(postData);
     hreq.end();
   });
@@ -214,12 +218,14 @@ app.get("/api/sessions", async (req, res) => {
     res.json(sessions);
   } catch (err: any) {
     console.error("Gateway sessions_list error:", err.message);
-    res.status(502).json({ error: "Gateway sessions unreachable: " + (err.message || err) });
+    if (!res.headersSent) {
+      res.status(502).json({ error: "Gateway sessions unreachable: " + (err.message || err) });
+    }
   }
 });
 
 // ── v5.0 影子缓存：Gateway 超时 & MySQL 离线降级 & 异步旁路落库 ──
-const GATEWAY_HISTORY_TIMEOUT = 5000; // 5 秒超时
+const GATEWAY_HISTORY_TIMEOUT = 20000; // 20 秒超时（跨 Tailscale 读取大 transcript 文件需较长时间）
 
 // GET /api/sessions/:sessionKey/history — 拉取指定会话的完整聊天记录
 app.get("/api/sessions/:sessionKey/history", async (req, res) => {
@@ -272,7 +278,9 @@ app.get("/api/sessions/:sessionKey/history", async (req, res) => {
     res.json({ source, messages });
   } catch (err: any) {
     console.error("Gateway sessions_history error:", err.message);
-    res.status(502).json({ error: "Gateway history unreachable: " + (err.message || err) });
+    if (!res.headersSent) {
+      res.status(502).json({ error: "Gateway history unreachable: " + (err.message || err) });
+    }
   }
 });
 
@@ -337,7 +345,10 @@ app.get("/api/openclaw/sessions", async (req, res) => {
     });
   } catch (err: any) {
     console.error("[openclaw/sessions] Gateway unreachable:", err.message);
-    return res.status(502).json({ error: "Gateway unreachable: " + err.message });
+    if (!res.headersSent) {
+      return res.status(502).json({ error: "Gateway unreachable: " + err.message });
+    }
+    return;
   }
 
   // Step 2: 尝试用 Prisma 覆盖 customTitle（失败则降级返回原始数据）
@@ -399,7 +410,9 @@ app.post("/api/openclaw/sessions/rename", async (req, res) => {
     res.json({ success: true });
   } catch (e: any) {
     console.error("[openclaw/sessions/rename] Prisma error:", e.message);
-    res.status(500).json({ error: "Database error: " + e.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Database error: " + e.message });
+    }
   }
 });
 
@@ -431,19 +444,25 @@ function writeHistory(data: any) {
 // 0. GET /api/health - Check MacBook reachability (Node 16: no fetch, use http.get)
 app.get("/api/health", (_req, res) => {
   const start = Date.now();
+  let sent = false;
+  const reply = (data: Record<string, any>) => {
+    if (sent || res.headersSent) return;
+    sent = true;
+    res.json(data);
+  };
   const hreq = http.get("http://100.83.118.16:8000/v1/models", { timeout: 2000 }, (hres) => {
     // Consume response to avoid memory leak, then report reachable
     hres.resume();
     hres.on("end", () => {
-      res.json({ reachable: true, latency: Date.now() - start });
+      reply({ reachable: true, latency: Date.now() - start });
     });
   });
   hreq.on("error", () => {
-    res.json({ reachable: false, latency: Date.now() - start });
+    reply({ reachable: false, latency: Date.now() - start });
   });
   hreq.on("timeout", () => {
     hreq.destroy();
-    res.json({ reachable: false, latency: Date.now() - start });
+    reply({ reachable: false, latency: Date.now() - start });
   });
 });
 
@@ -761,14 +780,24 @@ app.post("/api/chat", async (req, res, next) => {
   }
 });
 
-// 4. Express Error Handling Middleware
+// 4. Express Error Handling Middleware（防御性：不因 headers 已发送而崩溃）
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error("Global express error:", err);
-  res.status(err.status || 500).json({
-    error: err.message || "Internal Server Error",
-    code: err.code || "INTERNAL_ERROR",
-    retryable: err.message?.includes("timed out") || err.code === "ECONNREFUSED"
-  });
+  if (res.headersSent) {
+    // 响应已发送，无法再修改 headers，仅关闭连接
+    if (!res.writableEnded) res.end();
+    return;
+  }
+  try {
+    res.status(err.status || 500).json({
+      error: err.message || "Internal Server Error",
+      code: err.code || "INTERNAL_ERROR",
+      retryable: err.message?.includes("timed out") || err.code === "ECONNREFUSED"
+    });
+  } catch (e) {
+    console.error("Global error handler failed:", e);
+    if (!res.writableEnded) res.end();
+  }
 });
 
 // 启动逻辑：优先检查 dist/ 目录，存在则生产模式，否则动态加载 vite dev server
