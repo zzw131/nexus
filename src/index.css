@@ -37,33 +37,34 @@
 
 @variant dark (&:where(.dark, .dark *));
 
-/* Lobe AI Style Guide / Design Specification Library System */
+/* Google AI Studio Style Guide System */
 :root {
-  /* Specification Light Palette */
-  --lobe-bg: #fcfcfd;
+  /* Specification Light Palette - Pure White Foundation */
+  --lobe-bg: #ffffff;
   --lobe-canvas: #ffffff;
-  --lobe-sidebar: #f5f5f7;
+  --lobe-sidebar: #ffffff;
   --lobe-card: #ffffff;
-  --lobe-card-bg-subtle: #f8f9fa;
-  --lobe-border: rgba(228, 228, 231, 0.45);
-  --lobe-border-faint: rgba(228, 228, 231, 0.25);
+  --lobe-card-bg-subtle: #ffffff;
+  --lobe-border: #e4e4e7;
+  --lobe-border-faint: #f4f4f5;
   --lobe-text-main: #18181b;
   --lobe-text-secondary: #71717a;
-  --lobe-radius-xl: 14px;
-  --lobe-radius-2xl: 20px;
+  --lobe-radius-xl: 12px;
+  --lobe-radius-2xl: 16px;
+  --lobe-radius-3xl: 24px;
 }
 
 .dark {
-  /* Specification Dark Palette */
-  --lobe-bg: #09090b;
-  --lobe-canvas: #0e0e11;
-  --lobe-sidebar: #121215;
-  --lobe-card: #16161b;
-  --lobe-card-bg-subtle: #1c1c22;
-  --lobe-border: rgba(39, 39, 42, 0.35);
-  --lobe-border-faint: rgba(39, 39, 42, 0.18);
-  --lobe-text-main: #f4f4f5;
-  --lobe-text-secondary: #a1a1aa;
+  /* Specification Dark Palette - Pure White Equivalent for Dark Mode */
+  --lobe-bg: #ffffff;
+  --lobe-canvas: #ffffff;
+  --lobe-sidebar: #ffffff;
+  --lobe-card: #ffffff;
+  --lobe-card-bg-subtle: #ffffff;
+  --lobe-border: #e4e4e7;
+  --lobe-border-faint: #f4f4f5;
+  --lobe-text-main: #18181b;
+  --lobe-text-secondary: #71717a;
 }
 
 /* Base style resets */
@@ -74,7 +75,7 @@ body {
   color: var(--lobe-text-main);
 }
 
-/* Custom Minimalist Component Syntheses for Lobe UI */
+/* Custom Minimalist Component Syntheses */
 .lobe-canvas-panel {
   background-color: var(--lobe-canvas);
 }
@@ -87,21 +88,20 @@ body {
   background-color: var(--lobe-card);
   border: 1px solid var(--lobe-border);
   border-radius: var(--lobe-radius-xl);
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.01),
-    0 1px 2px rgba(0, 0, 0, 0.005);
+  box-shadow: none;
 }
 
 .lobe-flat-card {
-  background-color: var(--lobe-card-bg-subtle);
-  border: 1px solid var(--lobe-border-faint);
+  background-color: var(--lobe-canvas);
+  border: 1px solid var(--lobe-border);
   border-radius: var(--lobe-radius-xl);
 }
 
 .lobe-input-box {
-  background-color: var(--lobe-card-bg-subtle);
+  background-color: var(--lobe-canvas);
   border: 1px solid var(--lobe-border);
-  border-radius: var(--lobe-radius-2xl);
+  border-radius: var(--lobe-radius-3xl);
+  box-shadow: none;
 }
 
 .lobe-text-primary {

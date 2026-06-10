@@ -77,7 +77,8 @@ export const AGENTS: Record<string, Agent> = {
     alias: "Hermes",
     emoji: "🧠",
     color: "#10b981",
-    description: "端侧大语言模型推理引擎，基于 llama.cpp · 高频指令调度 · 本地隐私安全",
+    description:
+      "端侧大语言模型推理引擎，基于 llama.cpp · 高频指令调度 · 本地隐私安全",
     runtime: "llama",
     model: "llama-3-8b-instruct",
     computerId: "mac",
@@ -86,7 +87,7 @@ export const AGENTS: Record<string, Agent> = {
     personality: {
       style: "专业沉稳",
       greeting: "你好，我是 Hermes。本地推理引擎已就绪，随时为你服务。",
-    }
+    },
   },
   "openclaw-main": {
     id: "openclaw-main",
@@ -104,7 +105,7 @@ export const AGENTS: Record<string, Agent> = {
     personality: {
       style: "抽象幽默",
       greeting: "🐂 全局协作牛马已就绪，老板请下令！",
-    }
+    },
   },
   "openclaw-jianshen": {
     id: "openclaw-jianshen",
@@ -122,7 +123,7 @@ export const AGENTS: Record<string, Agent> = {
     personality: {
       style: "激励专业",
       greeting: "💪 健身教练已上线！今天练哪个部位？",
-    }
+    },
   },
   claude: {
     id: "claude",
@@ -139,7 +140,7 @@ export const AGENTS: Record<string, Agent> = {
     personality: {
       style: "精简",
       greeting: "Claude Code 已就绪，准备进行代码分析与重构。",
-    }
+    },
   },
   codex: {
     id: "codex",
@@ -157,6 +158,6 @@ export const AGENTS: Record<string, Agent> = {
     personality: {
       style: "极简",
       greeting: "Codex 引擎当前处于未激活状态。",
-    }
-  }
+    },
+  },
 };

@@ -79,7 +79,7 @@ export function HardwareTelemetryCard() {
     percent: number,
     colorClass: string,
   ) => (
-    <div className="p-3 bg-zinc-50/50 dark:bg-zinc-900/40 rounded-xl border border-zinc-100/30 dark:border-zinc-850/15">
+    <div className="p-3 bg-zinc-50 rounded-xl border border-zinc-200">
       <div className="flex items-center justify-between mb-1">
         <span className="text-[11px] text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5 font-sans font-medium">
           {status === "error" ? (
@@ -117,7 +117,7 @@ export function HardwareTelemetryCard() {
   );
 
   return (
-    <div className="p-5 overflow-hidden transition-all duration-300 border bg-white dark:bg-[#16161b] rounded-2xl border-[#e4e4e7]/30 dark:border-zinc-850/30 shadow-xs flex flex-col justify-between h-full">
+    <div className="p-5 overflow-hidden transition-all duration-300 border bg-white rounded-2xl border-zinc-200 shadow-none flex flex-col justify-between h-full">
       <div>
         <div className="flex items-center justify-between mb-4 gap-2">
           <div className="flex items-center gap-2 shrink truncate">
@@ -137,7 +137,7 @@ export function HardwareTelemetryCard() {
               MacBook Pro 目标节点
             </div>
           </div>
-          <div className="flex items-center gap-1 bg-zinc-50 dark:bg-zinc-900 px-2.5 py-1 shrink-0 whitespace-nowrap rounded-full text-[10px] font-mono text-zinc-550 dark:text-zinc-400 border border-zinc-100/10 dark:border-zinc-800/10 shadow-2xs">
+          <div className="flex items-center gap-1 bg-zinc-100 px-2.5 py-1 shrink-0 whitespace-nowrap rounded-full text-[10px] font-mono text-zinc-600 border border-zinc-200 shadow-none">
             {status === "error" ? (
               <WifiOff className="w-2.5 h-2.5 text-rose-500" />
             ) : (
@@ -189,7 +189,7 @@ export function HardwareTelemetryCard() {
       </div>
 
       {/* Footer Uptime representation */}
-      <div className="mt-4 pt-3 border-t border-[#e4e4e7]/15 dark:border-zinc-800/20 flex items-center justify-between text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
+      <div className="mt-4 pt-3 border-t border-zinc-200 flex items-center justify-between text-[10px] text-zinc-500 font-mono">
         <span>系统已运行时间</span>
         <span>{status === "normal" ? stats.uptime : "--:--:--"}</span>
       </div>
@@ -307,7 +307,7 @@ export function QuickActionsCard() {
   };
 
   return (
-    <div className="p-5 overflow-hidden transition-all duration-300 border bg-white dark:bg-[#16161b] rounded-2xl border-[#e4e4e7]/30 dark:border-zinc-855/30 shadow-xs flex flex-col justify-between h-full">
+    <div className="p-5 overflow-hidden transition-all duration-300 border bg-white rounded-2xl border-zinc-200 shadow-none flex flex-col justify-between h-full">
       <div>
         <div className="flex items-center justify-between mb-4">
           <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 font-sans">
@@ -338,14 +338,14 @@ export function QuickActionsCard() {
               }
               whileTap={runningAction === null ? { scale: 0.985 } : {}}
               transition={{ type: "spring", stiffness: 450, damping: 25 }}
-              className={`p-3 text-left rounded-xl bg-zinc-50 dark:bg-zinc-900/40 border border-zinc-100/10 dark:border-zinc-850/10 hover:bg-zinc-100/60 dark:hover:bg-zinc-855/30 transition-all group flex flex-col justify-between h-[90px] ${
+              className={`p-3 text-left rounded-xl bg-zinc-50 border border-zinc-200 hover:bg-zinc-100 transition-all group flex flex-col justify-between h-[90px] ${
                 runningAction !== null
                   ? "opacity-70 cursor-not-allowed"
                   : "cursor-pointer"
               }`}
             >
               <div className="flex justify-between items-start w-full">
-                <span className="p-1 px-1.5 rounded-md bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 group-hover:text-zinc-900 dark:group-hover:text-zinc-100 transition-colors">
+                <span className="p-1 px-1.5 rounded-md bg-white text-zinc-500 group-hover:text-zinc-900 transition-colors">
                   {act.id === "ping" ? (
                     <Wifi className="w-3.5 h-3.5" />
                   ) : act.id === "llama_logs" ? (

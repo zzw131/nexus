@@ -234,10 +234,15 @@ app.get("/api/sessions/:sessionKey/history", async (req, res) => {
     if (!sessionKey) return res.status(400).json({ error: "Missing sessionKey" });
 
     const decodedKey = decodeURIComponent(sessionKey);
+
+    // ── 分页参数（Node 16 兼容：parseInt 无默认值处理）──
+    const page = Math.max(1, parseInt((req.query.page as string) || "1", 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt((req.query.limit as string) || "50", 10) || 50));
+
     let source: "gateway" | "cache" = "gateway";
     let messages: any[] = [];
 
-    // ── 第 1 层：尝试 Gateway 实时拉取（5 秒超时）──
+    // ── 第 1 层：尝试 Gateway 实时拉取 ──
     try {
       const result = await gatewayInvoke("sessions_history", {
         sessionKey: decodedKey,
@@ -271,11 +276,17 @@ app.get("/api/sessions/:sessionKey/history", async (req, res) => {
         }
       } catch (dbErr: any) {
         console.error("[history-cache] MySQL fallback also failed:", dbErr.message);
-        // 两层都失败 → 返回空数组，前端展示离线提示
       }
     }
 
-    res.json({ source, messages });
+    // ── 内存级 slice 分页（messages 按 Gateway 返回顺序，最新在前）──
+    const total = messages.length;
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + limit;
+    const pagedMessages = messages.slice(startIndex, endIndex);
+    const hasMore = endIndex < total;
+
+    res.json({ source, messages: pagedMessages, total, page, limit, hasMore });
   } catch (err: any) {
     console.error("Gateway sessions_history error:", err.message);
     if (!res.headersSent) {
@@ -299,6 +310,26 @@ app.post("/api/auth/login", (req, res) => {
 
   const token = jwt.sign({ role: "ADMIN" }, JWT_SECRET, { expiresIn: "24h" });
   res.json({ token, role: "ADMIN" });
+});
+
+// ── GET /api/auth/verify ─────────────────────────────────────────
+// 🔐 页面加载时主动验证 token 有效性（防止幽灵 Token：客户端解析通过但服务端验签失败）
+app.get("/api/auth/verify", (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Missing or malformed Authorization header" });
+  }
+  const token = authHeader.slice(7);
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    if (decoded.role !== "ADMIN") {
+      return res.status(403).json({ error: "Admin role required" });
+    }
+    res.json({ valid: true, role: decoded.role, exp: decoded.exp });
+  } catch (err: any) {
+    const msg = err.name === "TokenExpiredError" ? "Token expired" : "Invalid token";
+    return res.status(401).json({ error: msg });
+  }
 });
 
 // ── 全局鉴权中间件 ──────────────────────────────────────────────
