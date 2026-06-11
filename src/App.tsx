@@ -1361,19 +1361,6 @@ export default function App() {
                   onScroll={handleChatScroll}
                   className="absolute inset-0 overflow-y-auto px-6 py-6 pb-44 space-y-6 scrollbar-thin flex flex-col"
                 >
-                  {/* Optional connection state banner */}
-                  <div className="p-3.5 rounded-xl bg-amber-50/30 dark:bg-amber-950/5 border border-amber-100/10 dark:border-amber-950/10 text-amber-800 dark:text-amber-400 text-[11px] flex gap-3 leading-relaxed shadow-3xs">
-                    <Info className="w-4 h-4 shrink-0 text-amber-500 mt-0.5" />
-                    <div className="font-sans font-medium">
-                      <strong>网络接入建议:</strong>本应用程序通过内置的
-                      Tailscale 专用隧道,将智能会话操作直接委托给您的远程
-                      MacBook 宿主机(基于接口地址{" "}
-                      <code>100.83.118.16:8000</code>
-                      )。如果提示词未正常响应,请务必确认您的本地 Mac
-                      运行守护进程正常工作。
-                    </div>
-                  </div>
-
                   {activeSession && activeSession.messages.length === 0 ? (
                     <div className="flex-1 flex flex-col items-center justify-center max-w-lg mx-auto text-center space-y-5 pt-12 pb-16 select-none min-h-[55vh]">
                       <div
@@ -1405,7 +1392,7 @@ export default function App() {
                       </div>
                     </div>
                   ) : (
-                    <div className="space-y-6 flex-1 flex flex-col pb-20 w-full">
+                    <div className="space-y-6 flex-1 flex flex-col pb-20 w-[97%] md:w-[95%] xl:w-[90%] max-w-none mx-auto">
                       {/* ── 无限滚动:顶部加载指示器 ── */}
                       {isLoadingHistory && (
                         <div className="flex items-center justify-center py-4 gap-2 text-zinc-400 dark:text-zinc-500 select-none">
@@ -1514,7 +1501,7 @@ export default function App() {
                   ) : (
                     <form
                       onSubmit={handleSubmitMessage}
-                      className="w-[95%] md:w-[85%] xl:w-[75%] max-w-5xl mx-auto relative group animate-fade-in"
+                      className="w-[97%] md:w-[92%] xl:w-[88%] max-w-5xl mx-auto relative group animate-fade-in"
                     >
                       {/* Outer boundary layer which manages linear glowing border */}
                       <div className="relative p-[1.5px] rounded-[24px] shadow-[0_12px_40px_rgba(0,0,0,0.06)] dark:shadow-[0_12px_40px_rgba(0,0,0,0.25)] bg-zinc-200/60 dark:bg-[#333538] group-hover:bg-zinc-300/60 dark:group-hover:bg-[#434548] focus-within:bg-zinc-400 dark:focus-within:bg-zinc-500 transition-all duration-300">
