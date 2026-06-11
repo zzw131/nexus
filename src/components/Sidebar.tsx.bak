@@ -106,19 +106,19 @@ export default function Sidebar({
   };
 
   return (
-    <aside className="relative w-[340px] border-r border-zinc-200 dark:border-[#333538] bg-white dark:bg-[#1e1f20] flex flex-col justify-between h-full group/sidebar transition-all duration-300">
+    <aside className="relative w-[340px] border-r border-zinc-200 bg-white flex flex-col justify-between h-full group/sidebar transition-all duration-300">
       <div className="flex-1 flex flex-col justify-between h-full min-h-0">
         <div
-          className="p-5 bg-white dark:bg-[#1e1f20] flex flex-col gap-4 select-none shrink-0 mb-2 relative z-10"
+          className="p-5 bg-white flex flex-col gap-4 select-none shrink-0 mb-2 relative z-10"
           aria-label="Nexus 控制台"
         >
-          <div className="flex items-center justify-between select-none">
-            <div className="flex items-center gap-3 w-full -ml-2 p-2 select-none pointer-events-none">
-              <div className="h-8 w-8 rounded-xl bg-zinc-900 dark:bg-white items-center justify-center flex overflow-hidden select-none">
-                <span className="text-white dark:text-zinc-900 font-bold text-[18px] select-none">N</span>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3 w-full hover:bg-zinc-50 -ml-2 p-2 rounded-xl cursor-pointer">
+              <div className="h-8 w-8 rounded-xl bg-zinc-900 items-center justify-center flex overflow-hidden">
+                <span className="text-white font-bold text-[18px]">N</span>
               </div>
-              <div className="flex-1 flex items-center justify-between select-none">
-                <h1 className="text-[17px] font-medium tracking-tight text-zinc-900 dark:text-zinc-100 font-sans flex items-center gap-2 select-none">
+              <div className="flex-1 flex items-center justify-between">
+                <h1 className="text-[17px] font-medium tracking-tight text-zinc-900 font-sans flex items-center gap-2">
                   Nexus
                 </h1>
               </div>
@@ -127,9 +127,9 @@ export default function Sidebar({
             <div className="relative">
               <button
                 onClick={() => setDropdownOpen(!dropdownOpen)}
-                className="p-2 rounded-xl text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-[#333538]/50 transition-colors shadow-none cursor-pointer"
+                className="p-2 rounded-xl text-zinc-400 hover:text-zinc-800 hover:bg-zinc-100 transition-colors shadow-none cursor-pointer"
               >
-                <ChevronDown className="w-4 h-4 text-zinc-500 dark:text-zinc-400" />
+                <ChevronDown className="w-4 h-4 text-zinc-500" />
               </button>
 
               <AnimatePresence>
@@ -144,14 +144,14 @@ export default function Sidebar({
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: -5, scale: 0.95 }}
                       transition={{ duration: 0.15 }}
-                      className="absolute right-0 top-full mt-1 w-48 bg-white dark:bg-[#1e1f20] border border-zinc-200 dark:border-[#333538] rounded-xl shadow-none z-50 overflow-hidden"
+                      className="absolute right-0 top-full mt-1 w-48 bg-white border border-zinc-200 rounded-xl shadow-none z-50 overflow-hidden"
                     >
                       <button
                         onClick={() => {
                           setDropdownOpen(false);
                           setSettingsOpen(true);
                         }}
-                        className="w-full flex items-center gap-2 px-3 py-2.5 text-[13px] font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-[#333538]/50 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors text-left"
+                        className="w-full flex items-center gap-2 px-3 py-2.5 text-[13px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 transition-colors text-left"
                       >
                         <Settings className="w-4 h-4" />
                         系统配置项
@@ -161,7 +161,7 @@ export default function Sidebar({
                           setDropdownOpen(false);
                           alert("即将通过云端代理网关创建新 Agent，敬请期待！");
                         }}
-                        className="w-full flex items-center gap-2 px-3 py-2.5 text-[13px] font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-[#333538]/50 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors text-left"
+                        className="w-full flex items-center gap-2 px-3 py-2.5 text-[13px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 transition-colors text-left"
                       >
                         <Plus className="w-4 h-4" />
                         添加新 Agent
@@ -197,8 +197,8 @@ export default function Sidebar({
                   }}
                   className={`group relative flex items-center justify-between w-full px-3 py-2 rounded-[10px] transition-colors select-none ${
                     isCodexPlaceholder
-                      ? "cursor-not-allowed text-zinc-400 dark:text-zinc-600"
-                      : "cursor-pointer hover:bg-zinc-100 dark:hover:bg-[#333538]/50 text-zinc-700 dark:text-zinc-300 dark:hover:text-zinc-200"
+                      ? "cursor-not-allowed text-zinc-400"
+                      : "cursor-pointer hover:bg-zinc-100 text-zinc-700"
                   }`}
                 >
                   <div className="flex items-center gap-3">
@@ -257,10 +257,10 @@ export default function Sidebar({
                             role="button"
                             tabIndex={0}
                             onClick={() => onSelectSession(sess.id)}
-                            className={`group/item flex items-center justify-between w-full transition-colors text-left relative cursor-pointer px-3 py-1.5 rounded-xl ${
+                            className={`group/item flex items-center justify-between w-full transition-colors text-left relative cursor-pointer px-3 py-1.5 rounded-lg ${
                               isActive
-                                ? "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-medium shadow-sm border border-transparent dark:border-zinc-700/50"
-                                : "bg-transparent text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-zinc-200 dark:hover:bg-zinc-800/50 font-medium border border-transparent"
+                                ? "bg-zinc-100 text-zinc-900 font-semibold"
+                                : "bg-transparent text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 font-medium"
                             }`}
                           >
                             <span
@@ -276,7 +276,7 @@ export default function Sidebar({
                                   e.stopPropagation();
                                   onRenameSession(sess.id, sess.title || "新对话");
                                 }}
-                                className="p-1 rounded-md text-zinc-400 hover:text-zinc-700 hover:bg-zinc-200 dark:hover:text-zinc-200 dark:hover:bg-zinc-700 transition-colors"
+                                className="p-1 rounded-md text-zinc-400 hover:text-zinc-700 hover:bg-zinc-200 transition-colors"
                               >
                                 <PencilLine className="w-3.5 h-3.5" />
                               </button>
@@ -301,7 +301,7 @@ export default function Sidebar({
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -20 }}
             transition={{ type: "spring", stiffness: 400, damping: 25 }}
-            className="absolute inset-0 z-20 flex flex-col justify-between bg-white dark:bg-[#1e1f20] p-5 font-sans antialiased text-left shadow-none border-r border-zinc-200 dark:border-[#333538]"
+            className="absolute inset-0 z-20 flex flex-col justify-between bg-white p-5 font-sans antialiased text-left shadow-none border-r border-zinc-200"
           >
             <div className="flex-1 flex flex-col min-h-0 space-y-5">
               <div className="flex items-start justify-between">
@@ -327,7 +327,7 @@ export default function Sidebar({
                     <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />{" "}
                     标准会话状态
                   </label>
-                  <div className="p-3 bg-zinc-50 dark:bg-[#1e1f20] border border-zinc-200 dark:border-[#333538] text-[10px] font-mono rounded-xl text-zinc-800 dark:text-zinc-200 break-all select-all">
+                  <div className="p-3 bg-zinc-50 border border-zinc-200 text-[10px] font-mono rounded-xl text-zinc-800 break-all select-all">
                     已连接
                   </div>
                 </div>
@@ -337,22 +337,22 @@ export default function Sidebar({
                     <Settings className="w-3.5 h-3.5 text-blue-500" />{" "}
                     UI 设计规范库
                   </label>
-                  <div className="p-3 bg-zinc-50 dark:bg-[#1e1f20] border border-zinc-200 dark:border-[#333538] text-[11px] font-sans leading-relaxed rounded-xl text-zinc-700 dark:text-zinc-300">
-                     <p className="font-semibold text-zinc-900 dark:text-zinc-100 mb-1">配色</p>
-                     <ul className="list-disc pl-4 mb-2 space-y-1 text-zinc-600 dark:text-zinc-400">
+                  <div className="p-3 bg-zinc-50 border border-zinc-200 text-[11px] font-sans leading-relaxed rounded-xl text-zinc-700">
+                     <p className="font-semibold text-zinc-900 mb-1">配色</p>
+                     <ul className="list-disc pl-4 mb-2 opacity-80 space-y-1 text-zinc-600">
                        <li>纯白主背景: bg-white</li>
                        <li>次级/悬浮: bg-zinc-50</li>
                        <li>边框颜色: border-zinc-200 (禁止使用多余阴影)</li>
                        <li>主文本: text-zinc-900</li>
                        <li>次文本: text-zinc-500</li>
                      </ul>
-                     <p className="font-semibold text-zinc-900 dark:text-zinc-100 mb-1">排版与布局</p>
-                     <ul className="list-disc pl-4 mb-2 space-y-1 text-zinc-600 dark:text-zinc-400">
+                     <p className="font-semibold text-zinc-900 mb-1">排版与布局</p>
+                     <ul className="list-disc pl-4 mb-2 opacity-80 space-y-1 text-zinc-600">
                        <li>字体: Inter / Sans-serif 体系</li>
                        <li>留白: 内部间距保持舒适清晰 (p-2, p-4)</li>
                      </ul>
-                     <p className="font-semibold text-zinc-900 dark:text-zinc-100 mb-1">交互表现</p>
-                     <ul className="list-disc pl-4 space-y-1 text-zinc-600 dark:text-zinc-400">
+                     <p className="font-semibold text-zinc-900 mb-1">交互表现</p>
+                     <ul className="list-disc pl-4 opacity-80 space-y-1 text-zinc-600">
                        <li>禁止使用复杂颜色渐变、毛玻璃与发光投影</li>
                        <li>交互反馈通过背景微变 (hover:bg-zinc-50) 处理</li>
                      </ul>

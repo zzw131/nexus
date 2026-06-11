@@ -1,0 +1,138 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Custom bento background transitions */
+  --color-zinc-850: #202024;
+  --color-zinc-905: #111113;
+
+  --animate-shimmer: shimmer 2s infinite linear;
+  --animate-text-shimmer: text-shimmer 2.5s ease-out infinite alternate;
+  --animate-rainbow-glow: rainbow-flow 8s ease infinite;
+  --animate-loader-progress: loader-progress 3.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  @keyframes text-shimmer {
+    0% { background-position: 0% 50%; }
+    100% { background-position: 200% 50%; }
+  }
+  @keyframes rainbow-flow {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+  @keyframes loader-progress {
+    0% { width: 0%; opacity: 0.95; }
+    80% { width: 100%; opacity: 0.95; }
+    90% { width: 100%; opacity: 0; }
+    100% { width: 0%; opacity: 0; }
+  }
+}
+
+@variant dark (&:where(.dark, .dark *));
+
+/* Google AI Studio Style Guide System */
+:root {
+  /* Specification Light Palette - Pure White Foundation */
+  --lobe-bg: #ffffff;
+  --lobe-canvas: #ffffff;
+  --lobe-sidebar: #ffffff;
+  --lobe-card: #ffffff;
+  --lobe-card-bg-subtle: #ffffff;
+  --lobe-border: #e4e4e7;
+  --lobe-border-faint: #f4f4f5;
+  --lobe-text-main: #18181b;
+  --lobe-text-secondary: #71717a;
+  --lobe-radius-xl: 12px;
+  --lobe-radius-2xl: 16px;
+  --lobe-radius-3xl: 24px;
+}
+
+.dark {
+  /* Specification Dark Palette - Pure White Equivalent for Dark Mode */
+  --lobe-bg: #ffffff;
+  --lobe-canvas: #ffffff;
+  --lobe-sidebar: #ffffff;
+  --lobe-card: #ffffff;
+  --lobe-card-bg-subtle: #ffffff;
+  --lobe-border: #e4e4e7;
+  --lobe-border-faint: #f4f4f5;
+  --lobe-text-main: #18181b;
+  --lobe-text-secondary: #71717a;
+}
+
+/* Base style resets */
+html,
+body {
+  font-family: var(--font-sans);
+  background-color: var(--lobe-bg);
+  color: var(--lobe-text-main);
+}
+
+/* Custom Minimalist Component Syntheses */
+.lobe-canvas-panel {
+  background-color: var(--lobe-canvas);
+}
+
+.lobe-sidebar-panel {
+  background-color: var(--lobe-sidebar);
+}
+
+.lobe-interactive-card {
+  background-color: var(--lobe-card);
+  border: 1px solid var(--lobe-border);
+  border-radius: var(--lobe-radius-xl);
+  box-shadow: none;
+}
+
+.lobe-flat-card {
+  background-color: var(--lobe-canvas);
+  border: 1px solid var(--lobe-border);
+  border-radius: var(--lobe-radius-xl);
+}
+
+.lobe-input-box {
+  background-color: var(--lobe-canvas);
+  border: 1px solid var(--lobe-border);
+  border-radius: var(--lobe-radius-3xl);
+  box-shadow: none;
+}
+
+.lobe-text-primary {
+  color: var(--lobe-text-main);
+}
+
+.lobe-text-muted {
+  color: var(--lobe-text-secondary);
+}
+
+/* Custom minimal scrollbar definitions */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(120, 120, 120, 0.15);
+  border-radius: 99px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 120, 120, 0.35);
+}
+
+/* Remove standard scrollbars */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
