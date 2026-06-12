@@ -6,6 +6,19 @@ import http from "http";
 import jwt from "jsonwebtoken";
 import { PrismaClient } from "@prisma/client";
 
+// ── 进程级错误兜底：防止 Node 16 http 流 ECONNRESET 导致 crash loop ──
+process.on("uncaughtException", (err) => {
+  console.error("[FATAL] uncaughtException:", err?.message || err);
+  if ((err as any)?.code === "ECONNRESET" || (err as any)?.code === "EPIPE" || (err as any)?.code === "ETIMEDOUT") {
+    console.error("[FATAL] Network disruption — process stays alive");
+    return;
+  }
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[FATAL] unhandledRejection:", (reason as any)?.message || reason);
+});
+
 const prisma = new PrismaClient();
 
 const app = express();
@@ -14,6 +27,74 @@ const HISTORY_FILE = path.join(process.cwd(), "history.json");
 const AGENTS_FILE = path.join(process.cwd(), "agents.json");
 const JWT_SECRET = process.env.JWT_SECRET || "nexus-default-jwt-secret-change-me";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "changeme123";
+
+// ═══════════════════════════════════════════════════════
+// 🔴 架构纠偏：双端持久化 + 增量同步
+// 云端 .jsonl 目录 — 与 MySQL 形成双活写入
+// ═══════════════════════════════════════════════════════
+const JSONL_DIR = path.join(process.cwd(), "sessions");
+
+function ensureJsonlDir() {
+  if (!fs.existsSync(JSONL_DIR)) {
+    fs.mkdirSync(JSONL_DIR, { recursive: true });
+    console.log("[jsonl] Created sessions directory:", JSONL_DIR);
+  }
+}
+
+// 🔴 双活写入：同时写 MySQL（主）和云端 .jsonl（副）
+// 每条消息一行 JSON，格式与 Gateway 本地 .jsonl 对齐
+function appendToJsonl(sessionId: string, role: "user" | "assistant", content: string) {
+  try {
+    ensureJsonlDir();
+    // 会话 ID 可能含特殊字符（: / \），替换为安全文件名
+    const safeName = sessionId.replace(/[:\/\\]/g, "_") + ".jsonl";
+    const line = JSON.stringify({ role, content, timestamp: new Date().toISOString() }) + "\n";
+    fs.appendFileSync(path.join(JSONL_DIR, safeName), line, "utf-8");
+  } catch (err) {
+    console.error("[jsonl] Append failed for session", sessionId, ":", err);
+  }
+}
+
+// 便捷函数：同时写入 MySQL + 云端 JSONL（双活）
+// 返回 Promise，由调用方自行 .catch
+function dualPersistMessages(sessionId: string, userContent: string, assistantContent: string) {
+  const now = Date.now();
+  const uid = Math.random().toString(36).slice(2, 8);
+
+  // 🔴 前置：确保 Session 表中有记录，避免 Message 表外键约束失败
+  // Gateway 自动创建 session 但可能未写入 Session 表
+  const ensureSession = prisma.session.upsert({
+    where: { id: sessionId },
+    update: { updatedAt: new Date() },
+    create: { id: sessionId, customTitle: null },
+  });
+
+  // MySQL 写入（主）
+  const mysqlPromise = ensureSession.then(() =>
+    prisma.message.createMany({
+      data: [
+        {
+          id: `msg-${now}-${uid}-u`,
+          sessionId,
+          role: "user",
+          content: userContent,
+        },
+        {
+          id: `msg-${now + 1}-${uid}-a`,
+          sessionId,
+          role: "assistant",
+          content: assistantContent,
+        },
+      ],
+    }),
+  );
+
+  // 云端 JSONL 写入（副，同步立即落盘）
+  appendToJsonl(sessionId, "user", userContent);
+  appendToJsonl(sessionId, "assistant", assistantContent);
+
+  return mysqlPromise;
+}
 
 // Default initial agents mapping to AGENTS in types.ts
 const DEFAULT_AGENTS = [
@@ -150,76 +231,61 @@ const GATEWAY_HOST = "100.83.118.16";
 const GATEWAY_PORT = 18789;
 const GATEWAY_TOKEN = "0e41fa7f04c5cca00fa7d492e60fdf75769d8fc99cb218f7";
 
-// 通用 helper: 调用 Gateway /tools/invoke，自动解包 content[0].text
-function gatewayInvoke(tool: string, args: Record<string, any> = {}, timeoutMs = 10000): Promise<any> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const done = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
-    const postData = JSON.stringify({ tool, args });
-    const hreq = http.request({
-      hostname: GATEWAY_HOST,
-      port: GATEWAY_PORT,
-      path: "/tools/invoke",
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${GATEWAY_TOKEN}`,
-        "Content-Length": Buffer.byteLength(postData),
-      },
-      timeout: timeoutMs,
-    }, (hres) => {
-      let body = "";
-      hres.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      hres.on("end", () => {
-        done(() => {
-          try {
-            const data = JSON.parse(body);
-            if (!data.ok) {
-              reject(new Error(data.error?.message || "Gateway invoke failed"));
-              return;
-            }
-            // Gateway 工具返回值可能包在 result.content[0].text JSON 字符串中
-            let result = data.result;
-            if (result?.content?.[0]?.type === "text" && result.content[0].text) {
-              try {
-                result = JSON.parse(result.content[0].text);
-              } catch {
-                // 不是 JSON 则保持原样
-              }
-            }
-            resolve(result);
-          } catch (e) {
-            reject(new Error("Invalid Gateway response"));
-          }
-        });
-      });
-    });
-    hreq.on("error", (err) => done(() => reject(err)));
-    hreq.on("timeout", () => done(() => { hreq.destroy(); reject(new Error("Gateway timeout")); }));
-    hreq.write(postData);
-    hreq.end();
+// ── Sessions API：直查 MySQL，零依赖 Gateway/Tailscale ──
+// 从 Message 表提取所有唯一 sessionId，LEFT JOIN Session 获取 customTitle
+
+function deriveAgentId(sessionKey: string): string {
+  if (sessionKey.startsWith("agent:jianshen:")) return "openclaw-jianshen";
+  if (sessionKey.startsWith("agent:main:")) return "openclaw-main";
+  if (sessionKey.startsWith("session-")) return "hermes";
+  // 纯 UUID → 默认为 openclaw-main（大部分 UUID 来自 OpenClaw 聊天）
+  return "openclaw-main";
+}
+
+async function fetchSessionsFromMySQL() {
+  const rows = await prisma.$queryRaw<any[]>`
+    SELECT
+      m.sessionId AS sessionKey,
+      s.customTitle,
+      COUNT(*) AS msgCount,
+      MIN(m.createdAt) AS firstMessageAt,
+      MAX(m.createdAt) AS lastMessageAt
+    FROM Message m
+    LEFT JOIN Session s ON s.id = m.sessionId
+    GROUP BY m.sessionId
+    ORDER BY MAX(m.createdAt) DESC
+  `;
+
+  return rows.map((row: any) => {
+    const key = row.sessionKey || "";
+    return {
+      key,
+      title: row.customTitle || "未命名会话",
+      customTitle: row.customTitle || null,
+      msgCount: Number(row.msgCount),
+      createdAt: row.firstMessageAt ? new Date(row.firstMessageAt).toISOString() : null,
+      updatedAt: row.lastMessageAt ? new Date(row.lastMessageAt).toISOString() : null,
+      agentId: deriveAgentId(key),
+    };
   });
 }
 
-// ── Sessions API (对接 MacBook OpenClaw Gateway /tools/invoke) ──
-
-// GET /api/sessions — 从 Gateway 拉取真实会话列表
+// GET /api/sessions — 从 MySQL 直查所有会话列表
 app.get("/api/sessions", async (req, res) => {
   try {
-    const args: Record<string, any> = {};
-    if (req.query.agentId) args.agentId = req.query.agentId;
-    const result = await gatewayInvoke("sessions_list", args);
-    // 过滤掉 subagent 和 cron 会话
-    let sessions = result?.sessions || (Array.isArray(result) ? result : []);
-    sessions = sessions.filter((s: any) => {
-      const key = s.key || "";
-      return !key.includes(":subagent:") && !key.includes(":cron:");
-    });
+    let sessions = await fetchSessionsFromMySQL();
+
+    // 可选 agentId 过滤
+    if (req.query.agentId) {
+      const agentId = req.query.agentId as string;
+      sessions = sessions.filter((s: any) => s.agentId === agentId);
+    }
+
     res.json(sessions);
   } catch (err: any) {
-    console.error("Gateway sessions_list error:", err.message);
+    console.error("[mysql/sessions] Query failed:", err.message);
     if (!res.headersSent) {
-      res.status(502).json({ error: "Gateway sessions unreachable: " + (err.message || err) });
+      res.status(500).json({ error: "Database session query failed: " + (err.message || err) });
     }
   }
 });
@@ -272,6 +338,24 @@ function mergeConsecutiveAssistants(messages: any[]): any[] {
 
 // ── v6.0 CQRS 落盘：直接从 MySQL Message 表查询历史，废弃 Gateway 穿透 ──
 
+// 🔧 v6.3 契约修复：提取 UUID 查询策略
+// 数据库 Message.sessionId 存储的是纯 UUID（如 a4454b68-...），
+// 但 Gateway session key 带前缀（如 agent:main:dashboard:a4454b68-...）。
+// 优先提取末段 UUID 查询，回退到完整 key 查询。
+function extractLookupIds(fullKey: string): string[] {
+  const candidates: string[] = [];
+  // 1. 完整 key（Gateway session key 格式）
+  candidates.push(fullKey);
+  // 2. 如果 key 含 ":"，提取末段作为 UUID 候选
+  if (fullKey.includes(":")) {
+    const lastSegment = fullKey.split(":").pop();
+    if (lastSegment && lastSegment.length > 0) {
+      candidates.push(lastSegment);
+    }
+  }
+  return candidates;
+}
+
 // GET /api/sessions/:sessionKey/history — 从 MySQL Message 表直查会话聊天记录
 app.get("/api/sessions/:sessionKey/history", async (req, res) => {
   try {
@@ -284,16 +368,30 @@ app.get("/api/sessions/:sessionKey/history", async (req, res) => {
     const page = Math.max(1, parseInt((req.query.page as string) || "1", 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt((req.query.limit as string) || "50", 10) || 50));
 
-    // ── 主路径：直接从 MySQL Message 表查询 ──
-    const [messages, total] = await Promise.all([
-      prisma.message.findMany({
-        where: { sessionId: decodedKey },
-        orderBy: { createdAt: "asc" },  // 旧消息在前，新消息在后
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      prisma.message.count({ where: { sessionId: decodedKey } }),
-    ]);
+    // ── 多候选查询：优先 UUID，回退到完整 key ──
+    const lookupIds = extractLookupIds(decodedKey);
+    let messages: any[] = [];
+    let total = 0;
+
+    for (const lookupId of lookupIds) {
+      [messages, total] = await Promise.all([
+        prisma.message.findMany({
+          where: { sessionId: lookupId },
+          orderBy: { createdAt: "asc" },
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+        prisma.message.count({ where: { sessionId: lookupId } }),
+      ]);
+      if (messages.length > 0) {
+        console.log(`[history] Found ${total} msgs using sessionId="${lookupId}" (from "${decodedKey}")`);
+        break;
+      }
+    }
+
+    if (messages.length === 0) {
+      console.log(`[history] No messages found for "${decodedKey}" (tried: ${lookupIds.join(", ")})`);
+    }
 
     const hasMore = (page * limit) < total;
 
@@ -378,67 +476,19 @@ app.use((req, res, next) => {
 });
 
 // ── GET /api/openclaw/sessions ──────────────────────────────────
-// 从 Gateway 拉取原始会话 JSON，尝试用 Prisma customTitle 覆盖
-// 如果 Prisma 连不上或查不到 → 优雅降级，直接返回原始 JSON
+// 🔧 v7 架构补漏：直查 MySQL，不再穿透 Gateway/Tailscale
+// 保留 /api/openclaw/sessions 路由以兼容旧前端，内部委托到 MySQL 查询
 // ─────────────────────────────────────────────────────────────────
 app.get("/api/openclaw/sessions", async (req, res) => {
-  // Step 1: 复用 gatewayInvoke 通用 helper 拉取会话
-  let rawPayload: any;
   try {
-    const result = await gatewayInvoke("sessions_list", {});
-    rawPayload = result?.sessions || (Array.isArray(result) ? result : []);
-    
-    // 过滤掉底层隐形任务记录（subagent / cron 会话不展示）
-    rawPayload = rawPayload.filter((s: any) => {
-      const key = s.key || "";
-      return !key.includes(":subagent:") && !key.includes(":cron:");
-    });
+    const sessions = await fetchSessionsFromMySQL();
+    res.json(sessions);
   } catch (err: any) {
-    console.error("[openclaw/sessions] Gateway unreachable:", err.message);
+    console.error("[openclaw/sessions] MySQL fallback failed:", err.message);
     if (!res.headersSent) {
-      return res.status(502).json({ error: "Gateway unreachable: " + err.message });
+      res.status(500).json({ error: "Session query failed: " + (err.message || err) });
     }
-    return;
   }
-
-  // Step 2: 尝试用 Prisma 覆盖 customTitle（失败则降级返回原始数据）
-  try {
-    const sessionIds: string[] = [];
-    for (const s of rawPayload) {
-      const sid = s.key || s.id || "";
-      if (sid) sessionIds.push(sid);
-    }
-
-    if (sessionIds.length > 0) {
-      const dbSessions = await prisma.session.findMany({
-        where: { id: { in: sessionIds } },
-        select: { id: true, customTitle: true },
-      });
-
-      const titleMap = new Map<string, string>();
-      for (const row of dbSessions) {
-        if (row.customTitle) titleMap.set(row.id, row.customTitle);
-      }
-
-      if (titleMap.size > 0) {
-        const enriched = rawPayload.map((s: any) => {
-          const sid = s.key || s.id || "";
-          const customTitle = titleMap.get(sid);
-          if (customTitle) {
-            return { ...s, title: customTitle, customTitle };
-          }
-          return s;
-        });
-        return res.json(enriched);
-      }
-    }
-  } catch (e: any) {
-    // 🛡️ 优雅降级：Prisma 连不上/查不到 → 打印错误，返回原始 JSON
-    console.error("[openclaw/sessions] Prisma overlay failed (graceful degradation):", e.message);
-  }
-
-  // Step 3: 返回原始 Gateway 数据（Prisma 不可用或没有自定义标题时）
-  res.json(rawPayload);
 });
 
 // ── POST /api/openclaw/sessions/rename ─────────────────────────
@@ -488,8 +538,8 @@ function writeHistory(data: any) {
   }
 }
 
-// /api/openclaw/* 已由上方 createProxyMiddleware 代理到 MacBook OpenClaw Gateway
-// 不再需要 mock 路由
+// /api/openclaw/sessions 和 /api/openclaw/sessions/rename 已在上面显式路由
+// 均直查 MySQL，零依赖 Gateway/Tailscale
 
 // 0. GET /api/health - Check MacBook reachability (Node 16: no fetch, use http.get)
 app.get("/api/health", (_req, res) => {
@@ -715,26 +765,12 @@ app.post("/api/chat", async (req, res, next) => {
               if (delta) hermesFullResponse += delta;
             } catch {}
           }
-          // 异步落盘：用户提问 + 模型回答 双双写入 MySQL Message 表
+          // 🔴 架构纠偏 v2：双端持久化（MySQL + 云端 .jsonl）+ 完整双向落盘
           if (session_id && hermesFullResponse) {
             const lastUserMsg = messages[messages.length - 1];
-            const now = Date.now();
-            prisma.message.createMany({
-              data: [
-                {
-                  id: `msg-${now}-${Math.random().toString(36).slice(2, 8)}-u`,
-                  sessionId: session_id,
-                  role: "user",
-                  content: typeof lastUserMsg?.content === "string" ? lastUserMsg.content : JSON.stringify(lastUserMsg?.content || ""),
-                },
-                {
-                  id: `msg-${now+1}-${Math.random().toString(36).slice(2, 8)}-a`,
-                  sessionId: session_id,
-                  role: "assistant",
-                  content: hermesFullResponse,
-                },
-              ],
-            }).catch((e: any) => console.error("[message-persist] hermes:", e.message));
+            const userContent = typeof lastUserMsg?.content === "string" ? lastUserMsg.content : JSON.stringify(lastUserMsg?.content || "");
+            dualPersistMessages(session_id, userContent, hermesFullResponse)
+              .catch((e: any) => console.error("[dualPersist] hermes:", e.message));
           }
           res.end();
         });
@@ -781,8 +817,15 @@ app.post("/api/chat", async (req, res, next) => {
       };
       const model = modelMap[agent_id] || "openclaw/main";
 
+      // 🔴 架构纠偏 v2：当 session_id 存在时，仅发送最后一条用户消息给 Gateway
+      // Gateway 通过 x-openclaw-session-key 从本地 .jsonl 加载会话上下文
+      // 这样 Gateway 收到的唯一新消息就是刚发送的用户输入，必然保存到本地 .jsonl 中
+      const msgsForGateway = session_id
+        ? [messages[messages.length - 1]]
+        : messages;
+
       const postData = JSON.stringify({
-        messages,
+        messages: msgsForGateway,
         model,
         temperature,
         stream: true
@@ -844,26 +887,12 @@ app.post("/api/chat", async (req, res, next) => {
               if (delta) oclawFullResponse += delta;
             } catch {}
           }
-          // 异步落盘：用户提问 + 模型回答 双双写入 MySQL Message 表
+          // 🔴 架构纠偏 v2：双端持久化（MySQL + 云端 .jsonl）+ 完整双向落盘
           if (session_id && oclawFullResponse) {
             const lastUserMsg = messages[messages.length - 1];
-            const now = Date.now();
-            prisma.message.createMany({
-              data: [
-                {
-                  id: `msg-${now}-${Math.random().toString(36).slice(2, 8)}-u`,
-                  sessionId: session_id,
-                  role: "user",
-                  content: typeof lastUserMsg?.content === "string" ? lastUserMsg.content : JSON.stringify(lastUserMsg?.content || ""),
-                },
-                {
-                  id: `msg-${now+1}-${Math.random().toString(36).slice(2, 8)}-a`,
-                  sessionId: session_id,
-                  role: "assistant",
-                  content: oclawFullResponse,
-                },
-              ],
-            }).catch((e: any) => console.error("[message-persist] openclaw:", e.message));
+            const userContent = typeof lastUserMsg?.content === "string" ? lastUserMsg.content : JSON.stringify(lastUserMsg?.content || "");
+            dualPersistMessages(session_id, userContent, oclawFullResponse)
+              .catch((e: any) => console.error("[dualPersist] openclaw:", e.message));
           }
           res.end();
         });
@@ -959,7 +988,7 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running at http://localhost:${PORT}`);
-    console.log(`[proxy] /api/openclaw/* → http://100.83.118.16:18789`);
+    console.log(`[sessions] MySQL-backed: /api/sessions + /api/openclaw/sessions`);
   });
 }
 

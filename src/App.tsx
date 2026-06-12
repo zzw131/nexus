@@ -210,6 +210,52 @@ export default function App() {
 
   const { executeWithRetry, isRetrying, retryCount, resetRetry } = useRetry();
 
+  // ── v6.3 字段契约标准化：后端 API 返回 {id, role, content, timestamp} ──
+  // 强制映射为 Message 接口 {id, role:"user"|"assistant", content, timestamp}
+  // 同时处理 content 可能是字符串或 ContentBlock[] 的两种情况
+  const normalizeMessage = (item: any): Message => {
+    // ── content 标准化：字符串 → 直接使用；数组 → 提取 text/thinking/toolCall ──
+    let content = "";
+    const rawContent = item?.content;
+    if (typeof rawContent === "string") {
+      content = rawContent;
+    } else if (Array.isArray(rawContent) && rawContent.length > 0) {
+      const textBlocks = rawContent
+        .filter((b: any) => b?.type === "text" && b?.text)
+        .map((b: any) => b.text);
+      if (textBlocks.length > 0) {
+        content = textBlocks.join("\n");
+      } else {
+        const thinkingBlocks = rawContent
+          .filter((b: any) => b?.type === "thinking" && b?.thinking)
+          .map((b: any) => b.thinking);
+        if (thinkingBlocks.length > 0) {
+          const combined = thinkingBlocks.join(" ");
+          content = combined.length > 200 ? "💭 " + combined.slice(0, 200) + "..." : "💭 " + combined;
+        } else {
+          const toolBlocks = rawContent
+            .filter((b: any) => b?.type === "toolCall" && b?.name)
+            .map((b: any) => `🔧 ${b.name}`);
+          content = toolBlocks.join(", ");
+        }
+      }
+    }
+
+    // ── 时间标准化：API 返回 timestamp (ISO 8601) → 格式化为 HH:mm ──
+    // 同时兼容 createdAt / updatedAt 等别名字段
+    const ts = item?.timestamp || item?.createdAt || item?.updatedAt;
+    const timeStr = ts
+      ? new Date(ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
+      : "";
+
+    return {
+      id: item?.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      role: item?.role === "assistant" ? "assistant" : "user",
+      content: content || "",
+      timestamp: timeStr,
+    };
+  };
+
   // ── 思考标签实时解析器:从累积文本中分离 <think> 与正式回答 ──
   const parseThinkingState = (text: string): {
     isThinking: boolean;
@@ -400,49 +446,60 @@ export default function App() {
     }
   }, [isGenerating]);
 
-  // Fetch all sessions：OpenClaw Agent 从 Gateway 实时拉取（Source of Truth），
-  // Hermes 从本地 history.json 读取
+  // 🔧 v7 架构补漏：MySQL 为唯一 Truth Source，不再穿透 Gateway
+  // 从 /api/sessions 直查 MySQL Message 表，零依赖 Tailscale/Gateway
   useEffect(() => {
     const fetchAllSessions = async () => {
       try {
         let allSessions: ChatSession[] = [];
 
-        // ── 1. 本地 Hermes 会话 ──
-        const historyRes = await fetch("/api/history");
-        if (historyRes.ok) {
-          const localSessions = await historyRes.json();
-          allSessions = [...localSessions];
-        }
-
-        // ── 2. OpenClaw 会话：从 Gateway 100% 实时拉取（不读本地 history.json）──
+        // ── 主数据源：MySQL 直查所有会话（Hermes + OpenClaw）──
         try {
-          const clawRes = await fetch("/api/openclaw/sessions");
-          if (clawRes.ok) {
-            const clawSessions = await clawRes.json();
-            const mappedClawSessions: ChatSession[] = clawSessions.map(
-              (cs: any) => {
-                // 根据 agentId 映射到前端的 agent_id
-                let frontendAgentId = "openclaw-main";
-                if (cs.agentId === "jianshen") frontendAgentId = "openclaw-jianshen";
-
-                return {
-                  id: cs.key,
-                  title: cs.customTitle || cs.title || cs.label || cs.displayName || "未命名会话",
-                  messages: [], // 消息按需实时拉取
-                  createdAt: cs.updatedAt
-                    ? new Date(cs.updatedAt).toISOString()
-                    : new Date().toISOString(),
-                  agentId: frontendAgentId,
-                };
-              },
+          const sessionsRes = await fetch("/api/sessions");
+          if (sessionsRes.ok) {
+            const dbSessions = await sessionsRes.json();
+            const mappedSessions: ChatSession[] = dbSessions.map(
+              (ds: any) => ({
+                id: ds.key,
+                title: ds.customTitle || ds.title || "未命名会话",
+                messages: [],
+                createdAt: ds.updatedAt || new Date().toISOString(),
+                agentId: ds.agentId || "openclaw-main",
+              }),
             );
-            allSessions = [...allSessions, ...mappedClawSessions];
+            allSessions = mappedSessions;
           }
-        } catch (clawErr) {
-          console.error("Gateway sessions unreachable:", clawErr);
+        } catch (mysqlErr) {
+          console.warn("MySQL sessions query failed:", mysqlErr);
         }
 
-        // ── 3. 排序 ──
+        // ── 降级：本地 Hermes 会话（history.json）──
+        if (allSessions.length === 0) {
+          try {
+            const historyRes = await fetch("/api/history");
+            if (historyRes.ok) {
+              allSessions = await historyRes.json();
+            }
+          } catch (err) {
+            console.warn("Local history fallback also unavailable:", err);
+          }
+        } else {
+          // MySQL 已有数据，补充 history.json 中可能独有的 Hermes 空会话
+          try {
+            const historyRes = await fetch("/api/history");
+            if (historyRes.ok) {
+              const localSessions = await historyRes.json();
+              const existingIds = new Set(allSessions.map((s: any) => s.id));
+              for (const ls of localSessions) {
+                if (!existingIds.has(ls.id)) {
+                  allSessions.push(ls);
+                }
+              }
+            }
+          } catch {}
+        }
+
+        // ── 排序 ──
         allSessions.sort(
           (a, b) =>
             new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
@@ -496,63 +553,32 @@ export default function App() {
         );
         if (res.ok) {
           const history = await res.json();
+          console.log("【1. API 原始返回数据】:", history);
           const rawMessages = Array.isArray(history.messages) ? history.messages : [];
-          // 🔓 若消息数量 >= 分页大小，激活"加载更多"标记
-          setHasMoreHistory(rawMessages.length >= 30);
-          const mappedMessages: Message[] = rawMessages.map((item: any) => {
-            let content = "";
-            const rawContent = item?.content;
+          // 🔓 使用后端返回的 hasMore（除非缺失，fallback 到消息数量判断）
+          setHasMoreHistory(history.hasMore === true || rawMessages.length >= 30);
+          // 🔧 v6.3 字段标准化：后端 API 返回 {id,role,content,timestamp} → 强制映射为 Message 接口
+          const mappedMessages: Message[] = rawMessages.map(normalizeMessage);
+          console.log("【2. 准备塞入 State 的数组】:", mappedMessages);
 
-            if (typeof rawContent === "string") {
-              content = rawContent;
-            } else if (Array.isArray(rawContent) && rawContent.length > 0) {
-              const textBlocks = rawContent
-                .filter((b: any) => b?.type === "text" && b?.text)
-                .map((b: any) => b.text);
-
-              if (textBlocks.length > 0) {
-                content = textBlocks.join("\n");
-              } else {
-                const thinkingBlocks = rawContent
-                  .filter((b: any) => b?.type === "thinking" && b?.thinking)
-                  .map((b: any) => b.thinking);
-                if (thinkingBlocks.length > 0) {
-                  const combined = thinkingBlocks.join(" ");
-                  content =
-                    combined.length > 200
-                      ? "💭 " + combined.slice(0, 200) + "..."
-                      : "💭 " + combined;
-                } else {
-                  const toolBlocks = rawContent
-                    .filter((b: any) => b?.type === "toolCall" && b?.name)
-                    .map((b: any) => `🔧 ${b.name}`);
-                  content = toolBlocks.join(", ");
-                }
-              }
-            }
-
-            const ts = item?.timestamp;
-            const timeStr = ts
-              ? new Date(ts).toLocaleTimeString("zh-CN", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })
-              : "";
-
-            return {
-              id:
-                item?.id ||
-                `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-              role: item?.role === "assistant" ? "assistant" : "user",
-              content: content || "",
-              timestamp: timeStr,
-            };
-          });
-
+          // 🔴 v8 乐观更新竞态修复：合并历史记录，不覆盖用户已在对话中发送的消息
           setSessions((prev) =>
-            prev.map((s) =>
-              s.id === id ? { ...s, messages: mappedMessages } : s,
-            ),
+            prev.map((s) => {
+              if (s.id !== id) return s;
+              // 从历史消息中建立 ID 集合，检测当前 state 中哪些消息不在历史里
+              // 这些消息就是用户乐观更新添加的（在历史加载完成前发送的）
+              const historyIds = new Set(mappedMessages.map((m: Message) => m.id));
+              const optimisticMsgs = (s.messages || []).filter(
+                (m: Message) => !historyIds.has(m.id),
+              );
+              console.log(
+                `【乐观合并】历史 ${mappedMessages.length} 条 + 乐观 ${optimisticMsgs.length} 条`,
+              );
+              return {
+                ...s,
+                messages: [...mappedMessages, ...optimisticMsgs],
+              };
+            }),
           );
         }
       } catch (err) {
@@ -950,40 +976,8 @@ export default function App() {
       if (data.messages && data.messages.length > 0) {
         const rawMessages: any[] = data.messages;
         // 后端已按 createdAt asc 排序（旧→新），直接 prepend，无需 reverse！
-        const olderMessages: Message[] = rawMessages.map((item: any) => {
-          let content = "";
-          const rawContent = item?.content;
-          if (typeof rawContent === "string") {
-            content = rawContent;
-          } else if (Array.isArray(rawContent) && rawContent.length > 0) {
-            const textBlocks = rawContent
-              .filter((b: any) => b?.type === "text" && b?.text)
-              .map((b: any) => b.text);
-            if (textBlocks.length > 0) {
-              content = textBlocks.join("\n");
-            } else {
-              const thinkingBlocks = rawContent
-                .filter((b: any) => b?.type === "thinking" && b?.thinking)
-                .map((b: any) => b.thinking);
-              if (thinkingBlocks.length > 0) {
-                const combined = thinkingBlocks.join(" ");
-                content = combined.length > 200
-                  ? "💭 " + combined.slice(0, 200) + "..."
-                  : "💭 " + combined;
-              }
-            }
-          }
-          const ts = item?.timestamp;
-          const timeStr = ts
-            ? new Date(ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
-            : "";
-          return {
-            id: item?.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            role: item?.role === "assistant" ? "assistant" : "user",
-            content: content || "",
-            timestamp: timeStr,
-          };
-        });
+        // 🔧 v6.3 字段标准化：复用 normalizeMessage 确保字段契约一致
+        const olderMessages: Message[] = rawMessages.map(normalizeMessage);
 
         setSessions((prev) =>
           prev.map((s) => {
@@ -993,8 +987,8 @@ export default function App() {
         );
 
         setCurrentHistoryPage(nextPage);
-        // 🔓 消息不为空 → 允许继续翻页(后端 hasMore 不可靠时以消息量驱动)
-        setHasMoreHistory(true);
+        // 🔓 v6.2 契约对齐：信任后端 hasMore（不足 30 条也能正确终止分页）
+        setHasMoreHistory(data.hasMore === true);
 
         // ── Scroll Anchoring:利用 scrollHeight 差值重置 scrollTop,防止画面跳动 ──
         requestAnimationFrame(() => {
@@ -1423,7 +1417,10 @@ export default function App() {
                         </div>
                       )}
                       <AnimatePresence initial={false}>
-                        {(activeSession?.messages || []).filter((msg) => !msg.content.includes("上下文压缩")).map((msg, index) => {
+                        {(() => {
+                          const filteredMsgs = (activeSession?.messages || []).filter((msg) => !msg.content.includes("上下文压缩"));
+                          console.log("【3. React 最终渲染的 messages 状态】:", filteredMsgs);
+                          return filteredMsgs.map((msg, index) => {
                           const isUser = msg.role === "user";
                           const isCurrentlyGenerating = isGenerating && !isUser && index === (activeSession?.messages || []).filter((msg) => !msg.content.includes("上下文压缩")).length - 1;
                           const msgAgent =
@@ -1506,7 +1503,7 @@ export default function App() {
                               </div>
                             </motion.div>
                           );
-                        })}
+                        })})}
                       </AnimatePresence>
                     </div>
                   )}
