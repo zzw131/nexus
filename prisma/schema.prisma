@@ -33,4 +33,16 @@ model Session {
   userId       Int?
   workspace    Workspace? @relation(fields: [workspaceId], references: [id])
   user         User?      @relation(fields: [userId], references: [id])
+  messages     Message[]
+}
+
+model Message {
+  id        String   @id @db.VarChar(255)
+  sessionId String   @db.VarChar(255)
+  role      String   @db.VarChar(50)
+  content   String   @db.LongText
+  createdAt DateTime @default(now())
+  session   Session  @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId, createdAt])
 }

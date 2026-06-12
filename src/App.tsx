@@ -42,7 +42,7 @@ import { useRetry } from "./hooks/useRetry";
 import { RenameSessionModal } from "./components/RenameSessionModal";
 import { ModelSelector } from "./components/ModelSelector";
 
-const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 1500) => {
+const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 10000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -289,6 +289,7 @@ export default function App() {
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const isLoadingHistoryRef = useRef<boolean>(false); // 同步并发锁,消除 onScroll 竞态条件
 
   // Load agents from backend
   useEffect(() => {
@@ -392,13 +393,12 @@ export default function App() {
       });
   }, []);
 
-  // Handle scrolling of chat container (auto-scroll to bottom, skip when loading history)
+  // Scroll to bottom on generation start/stop (not on history load)
   useEffect(() => {
-    if (chatContainerRef.current && !isLoadingHistory) {
-      chatContainerRef.current.scrollTop =
-        chatContainerRef.current.scrollHeight;
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
-  }, [sessions, activeSessionId, isGenerating, isLoadingHistory]);
+  }, [isGenerating]);
 
   // Fetch all sessions：OpenClaw Agent 从 Gateway 实时拉取（Source of Truth），
   // Hermes 从本地 history.json 读取
@@ -489,7 +489,6 @@ export default function App() {
     if (isRemote) {
       // ✅ 每次点击都实时向 Gateway 拉取最新聊天记录(分页:第1页,30条/页)
       setCurrentHistoryPage(1);
-      setHasMoreHistory(true);
       try {
         const res = await fetch(
           `/api/sessions/${encodeURIComponent(id)}/history?page=1&limit=30`,
@@ -498,7 +497,8 @@ export default function App() {
         if (res.ok) {
           const history = await res.json();
           const rawMessages = Array.isArray(history.messages) ? history.messages : [];
-          setHasMoreHistory(!!history.hasMore);
+          // 🔓 若消息数量 >= 分页大小，激活"加载更多"标记
+          setHasMoreHistory(rawMessages.length >= 30);
           const mappedMessages: Message[] = rawMessages.map((item: any) => {
             let content = "";
             const rawContent = item?.content;
@@ -720,6 +720,12 @@ export default function App() {
     );
 
     setIsGenerating(true);
+    // 发送新消息后自动滚底
+    requestAnimationFrame(() => {
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      }
+    });
     resetRetry(); // Reset before new attempt
 
     // 🔍 发出请求前打印当前鉴权头（便于排查 401）
@@ -796,6 +802,9 @@ export default function App() {
                     };
                   }),
                 );
+                if (chatContainerRef.current) {
+                  chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+                }
                 continue;
               }
 
@@ -823,6 +832,9 @@ export default function App() {
                     };
                   }),
                 );
+                if (chatContainerRef.current) {
+                  chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+                }
               }
             } catch (jsonErr) {
               // Gracefully bypass partial JSON chunks
@@ -910,7 +922,8 @@ export default function App() {
   // ── 无限滚动:触顶加载更早的历史记录 + Scroll Anchoring 防跳 ──
   const handleChatScroll = async () => {
     const container = chatContainerRef.current;
-    if (!container || isLoadingHistory || !hasMoreHistory || !activeSessionId) return;
+    // 🔒 死锁防护:isLoadingHistoryRef 用 ref 消除闭包竞态，hasMoreHistory 控制是否继续分页
+    if (!container || isLoadingHistoryRef.current || !hasMoreHistory || !activeSessionId) return;
 
     // 触顶阈值:scrollTop ≤ 5px
     if (container.scrollTop > 5) return;
@@ -918,6 +931,8 @@ export default function App() {
     const activeSess = sessions.find((s) => s.id === activeSessionId);
     if (!activeSess) return;
 
+    // 🔒 双锁设置:ref(防闭包竞态) + state(驱动UI)
+    isLoadingHistoryRef.current = true;
     setIsLoadingHistory(true);
     const prevScrollHeight = container.scrollHeight;
 
@@ -928,13 +943,14 @@ export default function App() {
         { headers: { ...getAuthHeaders() } },
         3000
       );
-      if (!res.ok) throw new Error("Failed to fetch older history");
+      if (!res.ok) throw new Error(`Gateway returned HTTP ${res.status}`);
 
       const data = await res.json();
+      // 🔓 关键修复:只要返回消息不为空,就允许继续翻页(兼容飞书等渠道 hasMore 字段差异)
       if (data.messages && data.messages.length > 0) {
         const rawMessages: any[] = data.messages;
-        // Gateway 返回最新在前 → 反转后 prepend
-        const olderMessages: Message[] = rawMessages.reverse().map((item: any) => {
+        // 后端已按 createdAt asc 排序（旧→新），直接 prepend，无需 reverse！
+        const olderMessages: Message[] = rawMessages.map((item: any) => {
           let content = "";
           const rawContent = item?.content;
           if (typeof rawContent === "string") {
@@ -977,7 +993,8 @@ export default function App() {
         );
 
         setCurrentHistoryPage(nextPage);
-        setHasMoreHistory(!!data.hasMore);
+        // 🔓 消息不为空 → 允许继续翻页(后端 hasMore 不可靠时以消息量驱动)
+        setHasMoreHistory(true);
 
         // ── Scroll Anchoring:利用 scrollHeight 差值重置 scrollTop,防止画面跳动 ──
         requestAnimationFrame(() => {
@@ -987,11 +1004,16 @@ export default function App() {
           }
         });
       } else {
+        // 消息为空 → 确已翻到底,关闭分页
         setHasMoreHistory(false);
       }
     } catch (err) {
       console.error("Failed to load more history:", err);
+      // ⚠️ 网络异常时不把 hasMoreHistory 直接设为 false(保留重试可能,但锁已释放)
+      // 🔓 不修改 hasMoreHistory,等下次触顶再试
     } finally {
+      // 🔓 死锁释放:无论成功/失败/异常,双锁必须在 finally 中释放!
+      isLoadingHistoryRef.current = false;
       setIsLoadingHistory(false);
     }
   };

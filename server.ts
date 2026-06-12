@@ -224,10 +224,55 @@ app.get("/api/sessions", async (req, res) => {
   }
 });
 
-// ── v5.0 影子缓存：Gateway 超时 & MySQL 离线降级 & 异步旁路落库 ──
-const GATEWAY_HISTORY_TIMEOUT = 20000; // 20 秒超时（跨 Tailscale 读取大 transcript 文件需较长时间）
+// ── 同轮次 assistant 消息合并（前端每轮只显示一个 AI 头像）──
+// 规则：连续的 assistant 消息合并为一条，保留第一条的 id，content 合并为扁平数组
+function mergeConsecutiveAssistants(messages: any[]): any[] {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
 
-// GET /api/sessions/:sessionKey/history — 拉取指定会话的完整聊天记录
+  const result: any[] = [];
+  let i = 0;
+
+  while (i < messages.length) {
+    const current = messages[i];
+
+    // 非 assistant 消息直接透传
+    if (!current || current.role !== "assistant") {
+      result.push(current);
+      i++;
+      continue;
+    }
+
+    // 连续 assistant 消息块：保留第一条的 id/metadata，合并所有 content
+    const base = { ...current };
+    const contents: any[] = [];
+
+    const collect = (content: any) => {
+      if (Array.isArray(content)) {
+        for (const item of content) {
+          contents.push(item);
+        }
+      } else if (typeof content === "string") {
+        contents.push({ type: "text", text: content });
+      } else if (content && typeof content === "object") {
+        contents.push(content);
+      }
+    };
+
+    while (i < messages.length && messages[i] && messages[i].role === "assistant") {
+      collect(messages[i].content);
+      i++;
+    }
+
+    base.content = contents;
+    result.push(base);
+  }
+
+  return result;
+}
+
+// ── v6.0 CQRS 落盘：直接从 MySQL Message 表查询历史，废弃 Gateway 穿透 ──
+
+// GET /api/sessions/:sessionKey/history — 从 MySQL Message 表直查会话聊天记录
 app.get("/api/sessions/:sessionKey/history", async (req, res) => {
   try {
     const { sessionKey } = req.params;
@@ -235,62 +280,36 @@ app.get("/api/sessions/:sessionKey/history", async (req, res) => {
 
     const decodedKey = decodeURIComponent(sessionKey);
 
-    // ── 分页参数（Node 16 兼容：parseInt 无默认值处理）──
+    // ── 分页参数 ──
     const page = Math.max(1, parseInt((req.query.page as string) || "1", 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt((req.query.limit as string) || "50", 10) || 50));
 
-    let source: "gateway" | "cache" = "gateway";
-    let messages: any[] = [];
+    // ── 主路径：直接从 MySQL Message 表查询 ──
+    const [messages, total] = await Promise.all([
+      prisma.message.findMany({
+        where: { sessionId: decodedKey },
+        orderBy: { createdAt: "asc" },  // 旧消息在前，新消息在后
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.message.count({ where: { sessionId: decodedKey } }),
+    ]);
 
-    // ── 第 1 层：尝试 Gateway 实时拉取 ──
-    try {
-      const result = await gatewayInvoke("sessions_history", {
-        sessionKey: decodedKey,
-      }, GATEWAY_HISTORY_TIMEOUT);
+    const hasMore = (page * limit) < total;
 
-      messages = result?.messages || (Array.isArray(result) ? result : []);
-      source = "gateway";
+    // 将 Prisma 结果映射为前端期望格式
+    const mappedMessages = messages.map((m) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      timestamp: m.createdAt,
+    }));
 
-      // ── 异步旁路落库（不阻塞响应）──
-      if (messages.length > 0) {
-        prisma.session.upsert({
-          where: { id: decodedKey },
-          update: { historyCache: messages },
-          create: { id: decodedKey, historyCache: messages },
-        }).catch((e: any) => {
-          console.error("[history-cache] async upsert failed:", e.message);
-        });
-      }
-    } catch (gatewayErr: any) {
-      // ── 第 2 层：Gateway 失败/超时 → MySQL 离线降级 ──
-      console.error("[history-cache] Gateway unreachable, falling back to MySQL cache:", gatewayErr.message);
-      source = "cache";
-
-      try {
-        const cached = await prisma.session.findUnique({
-          where: { id: decodedKey },
-          select: { historyCache: true },
-        });
-        if (cached?.historyCache && Array.isArray(cached.historyCache)) {
-          messages = cached.historyCache as any[];
-        }
-      } catch (dbErr: any) {
-        console.error("[history-cache] MySQL fallback also failed:", dbErr.message);
-      }
-    }
-
-    // ── 内存级 slice 分页（messages 按 Gateway 返回顺序，最新在前）──
-    const total = messages.length;
-    const startIndex = (page - 1) * limit;
-    const endIndex = startIndex + limit;
-    const pagedMessages = messages.slice(startIndex, endIndex);
-    const hasMore = endIndex < total;
-
-    res.json({ source, messages: pagedMessages, total, page, limit, hasMore });
+    res.json({ source: "mysql", messages: mappedMessages, total, page, limit, hasMore });
   } catch (err: any) {
-    console.error("Gateway sessions_history error:", err.message);
+    console.error("[history] MySQL query failed:", err.message);
     if (!res.headersSent) {
-      res.status(502).json({ error: "Gateway history unreachable: " + (err.message || err) });
+      res.status(502).json({ error: "History query failed: " + (err.message || err) });
     }
   }
 });
@@ -668,12 +687,55 @@ app.post("/api/chat", async (req, res, next) => {
           return;
         }
 
-        // SSE 流式透传
+        // SSE 流式透传 + 累积完整回复用于落盘
+        let hermesBuffer = "";
+        let hermesFullResponse = "";
         hres.on("data", (chunk: Buffer) => {
+          hermesBuffer += chunk.toString();
+          const lines = hermesBuffer.split("\n");
+          hermesBuffer = lines.pop() || "";
+          for (const line of lines) {
+            if (line.startsWith("data: ") && !line.startsWith("data: [DONE]")) {
+              try {
+                const parsed = JSON.parse(line.slice(6));
+                const delta = parsed.choices?.[0]?.delta?.content;
+                if (delta) hermesFullResponse += delta;
+              } catch {}
+            }
+          }
           res.write(chunk);
         });
 
         hres.on("end", () => {
+          // flush remaining buffer
+          if (hermesBuffer.startsWith("data: ") && hermesBuffer !== "data: [DONE]") {
+            try {
+              const parsed = JSON.parse(hermesBuffer.slice(6));
+              const delta = parsed.choices?.[0]?.delta?.content;
+              if (delta) hermesFullResponse += delta;
+            } catch {}
+          }
+          // 异步落盘：用户提问 + 模型回答 双双写入 MySQL Message 表
+          if (session_id && hermesFullResponse) {
+            const lastUserMsg = messages[messages.length - 1];
+            const now = Date.now();
+            prisma.message.createMany({
+              data: [
+                {
+                  id: `msg-${now}-${Math.random().toString(36).slice(2, 8)}-u`,
+                  sessionId: session_id,
+                  role: "user",
+                  content: typeof lastUserMsg?.content === "string" ? lastUserMsg.content : JSON.stringify(lastUserMsg?.content || ""),
+                },
+                {
+                  id: `msg-${now+1}-${Math.random().toString(36).slice(2, 8)}-a`,
+                  sessionId: session_id,
+                  role: "assistant",
+                  content: hermesFullResponse,
+                },
+              ],
+            }).catch((e: any) => console.error("[message-persist] hermes:", e.message));
+          }
           res.end();
         });
 
@@ -754,12 +816,55 @@ app.post("/api/chat", async (req, res, next) => {
           return;
         }
 
-        // SSE 流式透传
+        // SSE 流式透传 + 累积完整回复用于落盘
+        let oclawBuffer = "";
+        let oclawFullResponse = "";
         ores.on("data", (chunk: Buffer) => {
+          oclawBuffer += chunk.toString();
+          const lines = oclawBuffer.split("\n");
+          oclawBuffer = lines.pop() || "";
+          for (const line of lines) {
+            if (line.startsWith("data: ") && !line.startsWith("data: [DONE]")) {
+              try {
+                const parsed = JSON.parse(line.slice(6));
+                const delta = parsed.choices?.[0]?.delta?.content;
+                if (delta) oclawFullResponse += delta;
+              } catch {}
+            }
+          }
           res.write(chunk);
         });
 
         ores.on("end", () => {
+          // flush remaining buffer
+          if (oclawBuffer.startsWith("data: ") && oclawBuffer !== "data: [DONE]") {
+            try {
+              const parsed = JSON.parse(oclawBuffer.slice(6));
+              const delta = parsed.choices?.[0]?.delta?.content;
+              if (delta) oclawFullResponse += delta;
+            } catch {}
+          }
+          // 异步落盘：用户提问 + 模型回答 双双写入 MySQL Message 表
+          if (session_id && oclawFullResponse) {
+            const lastUserMsg = messages[messages.length - 1];
+            const now = Date.now();
+            prisma.message.createMany({
+              data: [
+                {
+                  id: `msg-${now}-${Math.random().toString(36).slice(2, 8)}-u`,
+                  sessionId: session_id,
+                  role: "user",
+                  content: typeof lastUserMsg?.content === "string" ? lastUserMsg.content : JSON.stringify(lastUserMsg?.content || ""),
+                },
+                {
+                  id: `msg-${now+1}-${Math.random().toString(36).slice(2, 8)}-a`,
+                  sessionId: session_id,
+                  role: "assistant",
+                  content: oclawFullResponse,
+                },
+              ],
+            }).catch((e: any) => console.error("[message-persist] openclaw:", e.message));
+          }
           res.end();
         });
 
