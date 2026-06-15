@@ -22,6 +22,7 @@ import {
   Moon,
   Mic,
   Plus,
+  ArrowDown,
 } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import MarkdownRenderer from "./components/MarkdownRenderer";
@@ -42,32 +43,81 @@ import { useRetry } from "./hooks/useRetry";
 import { RenameSessionModal } from "./components/RenameSessionModal";
 import { ModelSelector } from "./components/ModelSelector";
 
-const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 10000) => {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    clearTimeout(id);
-    return response;
-  } catch (error) {
-    clearTimeout(id);
-    throw error;
-  }
-};
-
 export default function App() {
   // Theme state - default to false (Light Theme)
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
 
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<ChatSession[]>([
+    {
+      id: "sess-mock-1",
+      title: "关于高保真界面的修改方案",
+      agentId: "hermes",
+      messages: [
+        {
+          id: "m1",
+          role: "user",
+          content: "请帮我配置低核心延迟的 Flash-Lite 极速响应,并将加载动效 and 生成卡片修改为细描边、扫光形式。",
+          timestamp: new Date(Date.now() - 3600000).toLocaleTimeString("zh-CN", { hour12: false }),
+        },
+        {
+          id: "mock-generating",
+          role: "assistant",
+          content: "",
+          timestamp: new Date(Date.now() - 3500000).toLocaleTimeString("zh-CN", { hour12: false }),
+        },
+        {
+          id: "m3",
+          role: "user",
+          content: "扫光和N字母图标的细节非常棒!渲染完成后的卡片可以一并展示出来吗?",
+          timestamp: new Date(Date.now() - 3400000).toLocaleTimeString("zh-CN", { hour12: false }),
+        },
+        {
+          id: "mock-completed",
+          role: "assistant",
+          content: "**[⚡️ Hermes 核心大脑]**\n卡片渲染任务已完成,这是升级细描边和重构后的最终高保真交付物:",
+          timestamp: new Date(Date.now() - 3300000).toLocaleTimeString("zh-CN", { hour12: false }),
+        }
+      ]
+    },
+    {
+      id: "sess-mock-2",
+      title: "架构审查",
+      agentId: "hermes",
+      messages: []
+    },
+    {
+      id: "sess-mock-3",
+      title: "产品文档补充",
+      agentId: "qwen",
+      messages: []
+    }
+  ]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>("sess-mock-1");
   const [input, setInput] = useState<string>("");
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
-  const [pinging, setPinging] = useState<boolean>(false);
   const [isInputFocused, setIsInputFocused] = useState<boolean>(false);
+  const [pinging, setPinging] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<"chat" | "telemetry">("chat");
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
-  
+
+  const [showScrollToBottom, setShowScrollToBottom] = useState<boolean>(false);
+
+  const handleScroll = () => {
+    if (chatContainerRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current;
+      setShowScrollToBottom(scrollHeight - scrollTop - clientHeight > 150);
+    }
+  };
+
+  const scrollToBottom = () => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTo({
+        top: chatContainerRef.current.scrollHeight,
+        behavior: "smooth"
+      });
+    }
+  };
+
   const [isAdviceOpen, setIsAdviceOpen] = useState<boolean>(false);
   const [hoveredAdvice, setHoveredAdvice] = useState<boolean>(false);
   const adviceRef = useRef<HTMLDivElement>(null);
@@ -133,154 +183,10 @@ export default function App() {
   const [toast, setToast] = useState<{ id: string; message: string } | null>(
     null,
   );
-  // v5.0 影子缓存：Gateway 离线降级标记
-  const [isGatewayOffline, setIsGatewayOffline] = useState<boolean>(false);
-  // ── 鉴权状态 ──
-  const [isAdmin, setIsAdmin] = useState<boolean>(() => {
-    const token = localStorage.getItem("nexus_token");
-    if (!token) return false;
-    try {
-      const payload = JSON.parse(atob(token.split(".")[1]));
-      return payload.role === "ADMIN" && payload.exp * 1000 > Date.now();
-    } catch {
-      localStorage.removeItem("nexus_token");
-      return false;
-    }
-  });
-  const [loginPassword, setLoginPassword] = useState("");
-  const [loginError, setLoginError] = useState("");
 
-  const getAuthHeaders = (): Record<string, string> => {
-    const token = localStorage.getItem("nexus_token");
-    if (token) {
-      // 🔍 Auth Debug: 打印当前 Token 前 30 字符 + 剩余时长，便于排查 401
-      try {
-        const payload = JSON.parse(atob(token.split(".")[1]));
-        const remainingMs = payload.exp * 1000 - Date.now();
-        const remainingMin = Math.round(remainingMs / 60000);
-        console.log("[Auth Debug] Token preview:", token.substring(0, 30) + "...", "| role:", payload.role, "| expires in:", remainingMin > 0 ? `${remainingMin}min` : "EXPIRED");
-      } catch {
-        console.warn("[Auth Debug] Token present but cannot decode jwt payload");
-      }
-      return { Authorization: `Bearer ${token}` };
-    }
-    console.warn("[Auth Debug] No token in localStorage — sending request without Authorization header");
-    return {};
-  };
+  const { isRetrying, retryCount, resetRetry } = useRetry();
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoginError("");
-    try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: loginPassword }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setLoginError(data.error || "认证失败");
-        return;
-      }
-      localStorage.setItem("nexus_token", data.token);
-      setIsAdmin(true);
-      setLoginPassword("");
-    } catch {
-      setLoginError("网络错误，请重试");
-    }
-  };
-
-  const handleLogout = (reason?: string) => {
-    localStorage.removeItem("nexus_token");
-    setIsAdmin(false);
-    if (reason) {
-      setLoginError(reason);
-    }
-  };
-
-  // ── 思考态:SSE 流中实时解析 <think> 标签 ──
-  const [isThinking, setIsThinking] = useState<boolean>(false);
-  const [reasoningText, setReasoningText] = useState<string>("");
-  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
-
-  // ── 无限滚动分页状态 ──
-  const [currentHistoryPage, setCurrentHistoryPage] = useState<number>(1);
-  const [hasMoreHistory, setHasMoreHistory] = useState<boolean>(false);
-  const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
-
-  const { executeWithRetry, isRetrying, retryCount, resetRetry } = useRetry();
-
-  // ── v6.3 字段契约标准化：后端 API 返回 {id, role, content, timestamp} ──
-  // 强制映射为 Message 接口 {id, role:"user"|"assistant", content, timestamp}
-  // 同时处理 content 可能是字符串或 ContentBlock[] 的两种情况
-  const normalizeMessage = (item: any): Message => {
-    // ── content 标准化：字符串 → 直接使用；数组 → 提取 text/thinking/toolCall ──
-    let content = "";
-    const rawContent = item?.content;
-    if (typeof rawContent === "string") {
-      content = rawContent;
-    } else if (Array.isArray(rawContent) && rawContent.length > 0) {
-      const textBlocks = rawContent
-        .filter((b: any) => b?.type === "text" && b?.text)
-        .map((b: any) => b.text);
-      if (textBlocks.length > 0) {
-        content = textBlocks.join("\n");
-      } else {
-        const thinkingBlocks = rawContent
-          .filter((b: any) => b?.type === "thinking" && b?.thinking)
-          .map((b: any) => b.thinking);
-        if (thinkingBlocks.length > 0) {
-          const combined = thinkingBlocks.join(" ");
-          content = combined.length > 200 ? "💭 " + combined.slice(0, 200) + "..." : "💭 " + combined;
-        } else {
-          const toolBlocks = rawContent
-            .filter((b: any) => b?.type === "toolCall" && b?.name)
-            .map((b: any) => `🔧 ${b.name}`);
-          content = toolBlocks.join(", ");
-        }
-      }
-    }
-
-    // ── 时间标准化：API 返回 timestamp (ISO 8601) → 格式化为 HH:mm ──
-    // 同时兼容 createdAt / updatedAt 等别名字段
-    const ts = item?.timestamp || item?.createdAt || item?.updatedAt;
-    const timeStr = ts
-      ? new Date(ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
-      : "";
-
-    return {
-      id: item?.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      role: item?.role === "assistant" ? "assistant" : "user",
-      content: content || "",
-      timestamp: timeStr,
-    };
-  };
-
-  // ── 思考标签实时解析器:从累积文本中分离 <think> 与正式回答 ──
-  const parseThinkingState = (text: string): {
-    isThinking: boolean;
-    reasoningText: string;
-    displayContent: string;
-  } => {
-    const thinkOpen = text.indexOf("<think>");
-    if (thinkOpen === -1) {
-      return { isThinking: false, reasoningText: "", displayContent: text };
-    }
-    const thinkClose = text.indexOf("</think>", thinkOpen + 7);
-    if (thinkClose === -1) {
-      // 仍在思考态中
-      const reasoning = text.substring(thinkOpen + 7);
-      const display = text.substring(0, thinkOpen);
-      return { isThinking: true, reasoningText: reasoning, displayContent: display };
-    }
-    // 思考已结束:提取思考文本 + 正式回答
-    const reasoning = text.substring(thinkOpen + 7, thinkClose);
-    const before = text.substring(0, thinkOpen);
-    const after = text.substring(thinkClose + 8);
-    return { isThinking: false, reasoningText: reasoning, displayContent: before + after };
-  };
-
-  // Test connection to MacBook
+  // Test connection to Alibaba Cloud server
   const testConnection = async () => {
     try {
       const controller = new AbortController();
@@ -288,45 +194,17 @@ export default function App() {
       const res = await fetch("/api/health", { signal: controller.signal });
       clearTimeout(timeout);
 
-      const data = await res.json();
-      if (data.reachable) {
+      if (res.ok) {
         setNetworkError(null);
-        setIsGatewayOffline(false); // Gateway 恢复，清除离线标记
-      } else {
-        setNetworkError("MacBook 不可达，请检查网络连接");
+        return true;
       }
-      return data.reachable;
+      setNetworkError("服务器响应异常");
+      return false;
     } catch {
-      setNetworkError("无法连接到本地服务器");
+      setNetworkError("无法连接到服务器");
       return false;
     }
   };
-
-  // ── 全局 fetch 拦截器：统一处理 401，自动触发 logout ──
-  useEffect(() => {
-    const originalFetch = window.fetch;
-    window.fetch = async (...args: Parameters<typeof fetch>) => {
-      try {
-        const response = await originalFetch(...args);
-        // 任何 fetch 返回 401 都触发强制登出（排除 /api/auth/login）
-        if (response.status === 401) {
-          const url = typeof args[0] === 'string' ? args[0] : (args[0] as Request).url;
-          if (!url.includes('/api/auth/login')) {
-            console.warn('[Auth Guard] 401 detected on:', url, '→ forcing logout');
-            localStorage.removeItem('nexus_token');
-            setIsAdmin(false);
-            setLoginError('会话凭证已失效，请重新输入管理员密码');
-          }
-        }
-        return response;
-      } catch (err) {
-        throw err;
-      }
-    };
-    return () => {
-      window.fetch = originalFetch;
-    };
-  }, []);
 
   // initial check
   useEffect(() => {
@@ -335,28 +213,10 @@ export default function App() {
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const isLoadingHistoryRef = useRef<boolean>(false); // 同步并发锁,消除 onScroll 竞态条件
 
-  // Load agents from backend
+  // Load agents from config
   useEffect(() => {
-    async function loadAgents() {
-      try {
-        const response = await fetch("/api/agents");
-        if (response.ok) {
-          const data = await response.json();
-          // clear and replace AGENTS with latest
-          for (let key in AGENTS) delete AGENTS[key];
-          data.forEach((a: any) => {
-            AGENTS[a.id] = a;
-          });
-
-          setForceUpdate((p) => p + 1);
-        }
-      } catch (err) {
-        console.error("Express /api/agents inaccessible:", err);
-      }
-    }
-    loadAgents();
+    // 本地静态 AGENTS 配置已包含所有 Agent
   }, []);
 
   // Apply dark mode CSS classes
@@ -394,133 +254,29 @@ export default function App() {
     }
   }, [activeSessionId, currentAgentId]);
 
-  // 🔐 页面加载时主动调用服务端 /api/auth/verify 验证 Token 有效性
-  // 防止「幽灵 Token」：客户端 JWT 解析通过（role=ADMIN, exp 未到期）
-  // 但服务端 JWT_SECRET 已变更导致验签失败 → 所有 API 返回 401
-  useEffect(() => {
-    const token = localStorage.getItem("nexus_token");
-    if (!token) return; // 未登录，不需要验证
-
-    // 先做客户端快速检查
-    try {
-      const payload = JSON.parse(atob(token.split(".")[1]));
-      if (payload.exp * 1000 <= Date.now()) {
-        // token 已过期，直接清除
-        console.warn("[Auth Verify] Token expired client-side, clearing");
-        localStorage.removeItem("nexus_token");
-        setIsAdmin(false);
-        setLoginError("会话已过期，请重新登录");
-        return;
-      }
-    } catch {
-      console.warn("[Auth Verify] Token malformed, clearing");
-      localStorage.removeItem("nexus_token");
-      setIsAdmin(false);
-      return;
-    }
-
-    // 调用服务端验证端点
-    fetch("/api/auth/verify", {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((res) => {
-        if (!res.ok) {
-          console.warn("[Auth Verify] Token rejected by server (status:" + res.status + ") → clearing ghost token");
-          localStorage.removeItem("nexus_token");
-          setIsAdmin(false);
-          setLoginError("会话凭证已失效（服务端验证失败），请重新登录");
-        } else {
-          console.log("[Auth Verify] Token validated successfully by server ✅");
-        }
-      })
-      .catch((err) => {
-        // 网络错误不强制登出（可能是离线），保留 token 等恢复后重试
-        console.warn("[Auth Verify] Cannot reach server for token verification:", err.message);
-      });
-  }, []);
-
-  // Scroll to bottom on generation start/stop (not on history load)
+  // Handle scrolling of chat container
   useEffect(() => {
     if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      chatContainerRef.current.scrollTop =
+        chatContainerRef.current.scrollHeight;
     }
-  }, [isGenerating]);
+  }, [sessions, activeSessionId, isGenerating]);
 
-  // 🔧 v7 架构补漏：MySQL 为唯一 Truth Source，不再穿透 Gateway
-  // 从 /api/sessions 直查 MySQL Message 表，零依赖 Tailscale/Gateway
+  // Fetch all sessions:OpenClaw Agent 从 Gateway 实时拉取(Source of Truth),
+  // Hermes 从本地 history.json 读取
   useEffect(() => {
     const fetchAllSessions = async () => {
       try {
-        let allSessions: ChatSession[] = [];
-
-        // ── 主数据源：MySQL 直查所有会话（Hermes + OpenClaw）──
-        try {
-          const sessionsRes = await fetch("/api/sessions");
-          if (sessionsRes.ok) {
-            const dbSessions = await sessionsRes.json();
-            const mappedSessions: ChatSession[] = dbSessions.map(
-              (ds: any) => ({
-                id: ds.key,
-                title: ds.customTitle || ds.title || "未命名会话",
-                messages: [],
-                createdAt: ds.updatedAt || new Date().toISOString(),
-                agentId: ds.agentId || "openclaw-main",
-              }),
-            );
-            allSessions = mappedSessions;
-          }
-        } catch (mysqlErr) {
-          console.warn("MySQL sessions query failed:", mysqlErr);
-        }
-
-        // ── 降级：本地 Hermes 会话（history.json）──
-        if (allSessions.length === 0) {
-          try {
-            const historyRes = await fetch("/api/history");
-            if (historyRes.ok) {
-              allSessions = await historyRes.json();
-            }
-          } catch (err) {
-            console.warn("Local history fallback also unavailable:", err);
-          }
-        } else {
-          // MySQL 已有数据，补充 history.json 中可能独有的 Hermes 空会话
-          try {
-            const historyRes = await fetch("/api/history");
-            if (historyRes.ok) {
-              const localSessions = await historyRes.json();
-              const existingIds = new Set(allSessions.map((s: any) => s.id));
-              for (const ls of localSessions) {
-                if (!existingIds.has(ls.id)) {
-                  allSessions.push(ls);
-                }
-              }
-            }
-          } catch {}
-        }
-
-        // ── 排序 ──
-        allSessions.sort(
-          (a, b) =>
-            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-        );
-
-        if (allSessions.length > 0) {
-          setSessions(allSessions);
-          const activeAgent =
-            localStorage.getItem("hermes_current_agent_id") || "hermes";
-          const savedActiveId = localStorage.getItem(
-            `hermes_active_session_id_${activeAgent}`,
-          );
-          if (
-            savedActiveId &&
-            allSessions.some((s) => s.id === savedActiveId)
-          ) {
-            setActiveSessionId(savedActiveId);
-          } else {
-            setActiveSessionId(null);
-          }
-        }
+          // 第二阶段·纯净启动:不连数据库,创建空白会话
+          const defaultSession: ChatSession = {
+            id: "session-" + Date.now(),
+            title: "新对话",
+            agentId: "hermes",
+            messages: [],
+            createdAt: new Date().toISOString(),
+          };
+          setSessions([defaultSession]);
+          setActiveSessionId(defaultSession.id);
       } catch (err) {
         console.error("Failed to fetch sessions:", err);
       }
@@ -529,65 +285,13 @@ export default function App() {
     fetchAllSessions();
   }, [forceUpdate]);
 
-  const handleSelectSession = async (id: string) => {
+  const handleSelectSession = (id: string) => {
     setActiveSessionId(id);
     const selectedSess = sessions.find((s) => s.id === id);
     if (!selectedSess) return;
 
     if (selectedSess.agentId) {
       setCurrentAgentId(selectedSess.agentId);
-    }
-
-    // 判断是否为 OpenClaw 远程会话
-    const isRemote =
-      AGENTS[selectedSess.agentId || ""]?.runtime === "openclaw" ||
-      id.startsWith("agent:");
-
-    if (isRemote) {
-      // ✅ 每次点击都实时向 Gateway 拉取最新聊天记录(分页:第1页,30条/页)
-      setCurrentHistoryPage(1);
-      try {
-        const res = await fetch(
-          `/api/sessions/${encodeURIComponent(id)}/history?page=1&limit=30`,
-          { headers: { ...getAuthHeaders() } }
-        );
-        if (res.ok) {
-          const history = await res.json();
-          console.log("【1. API 原始返回数据】:", history);
-          const rawMessages = Array.isArray(history.messages) ? history.messages : [];
-          // 🔓 使用后端返回的 hasMore（除非缺失，fallback 到消息数量判断）
-          setHasMoreHistory(history.hasMore === true || rawMessages.length >= 30);
-          // 🔧 v6.3 字段标准化：后端 API 返回 {id,role,content,timestamp} → 强制映射为 Message 接口
-          const mappedMessages: Message[] = rawMessages.map(normalizeMessage);
-          console.log("【2. 准备塞入 State 的数组】:", mappedMessages);
-
-          // 🔴 v8 乐观更新竞态修复：合并历史记录，不覆盖用户已在对话中发送的消息
-          setSessions((prev) =>
-            prev.map((s) => {
-              if (s.id !== id) return s;
-              // 从历史消息中建立 ID 集合，检测当前 state 中哪些消息不在历史里
-              // 这些消息就是用户乐观更新添加的（在历史加载完成前发送的）
-              const historyIds = new Set(mappedMessages.map((m: Message) => m.id));
-              const optimisticMsgs = (s.messages || []).filter(
-                (m: Message) => !historyIds.has(m.id),
-              );
-              console.log(
-                `【乐观合并】历史 ${mappedMessages.length} 条 + 乐观 ${optimisticMsgs.length} 条`,
-              );
-              return {
-                ...s,
-                messages: [...mappedMessages, ...optimisticMsgs],
-              };
-            }),
-          );
-        }
-      } catch (err) {
-        console.error("Failed to fetch session history:", err);
-      }
-    } else {
-      // 本地 Agent:重置分页状态
-      setCurrentHistoryPage(1);
-      setHasMoreHistory(false);
     }
   };
 
@@ -635,45 +339,14 @@ export default function App() {
   };
 
   // 重命名会话
-  const handleRenameConfirm = async (newName: string) => {
+  const handleRenameConfirm = (newName: string) => {
     const { sessionId } = renameModalState;
     if (!sessionId) return;
 
     setSessions((prev) => {
       const updated = prev.map((s) => (s.id === sessionId ? { ...s, title: newName } : s));
-      const renamedSession = updated.find((s) => s.id === sessionId);
-      if (renamedSession && AGENTS[renamedSession.agentId || "hermes"]?.runtime !== "openclaw") {
-        syncLocalSession(renamedSession);
-      }
       return updated;
     });
-
-    // 同步重命名到 Gateway
-    try {
-      const res = await fetch("/api/openclaw/sessions/rename", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ sessionId, newTitle: newName }),
-      });
-      if (!res.ok) {
-        console.error("重命名 API 返回错误:", res.status);
-      }
-    } catch (err) {
-      console.error("重命名请求失败（UI 已刷新，下次拉取恢复）:", err);
-    }
-  };
-
-  // 本地会话持久化（仅 Hermes 等本地 Agent，OpenClaw 以 Gateway 为 Source of Truth）
-  const syncLocalSession = async (session: ChatSession) => {
-    try {
-      await fetch("/api/history", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify(session),
-      });
-    } catch (err) {
-      console.error("Failed to sync local session:", err);
-    }
   };
 
   const handleAgentSwitch = (newAgentId: string) => {
@@ -689,8 +362,6 @@ export default function App() {
     e?.preventDefault();
     if (!input.trim() || isGenerating || !activeSessionId || !activeSession)
       return;
-
-    if (isGatewayOffline) return;
 
     const userMessage: Message = {
       id: "msg-user-" + Date.now(),
@@ -721,14 +392,8 @@ export default function App() {
     );
     setInput("");
 
-    // 本地持久化同步(仅 Hermes 本地会话)
-    if (AGENTS[currentAgentId]?.runtime !== "openclaw") {
-      syncLocalSession(updatedSession);
-    }
-
     // Create a temporary placeholder message for SSE printing output
     const assistantPlaceholderId = "msg-assistant-" + Date.now();
-    setStreamingMessageId(assistantPlaceholderId);
     const assistantPlaceholder: Message = {
       id: assistantPlaceholderId,
       role: "assistant",
@@ -746,54 +411,41 @@ export default function App() {
     );
 
     setIsGenerating(true);
-    // 发送新消息后自动滚底
-    requestAnimationFrame(() => {
-      if (chatContainerRef.current) {
-        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-      }
-    });
     resetRetry(); // Reset before new attempt
 
-    // 🔍 发出请求前打印当前鉴权头（便于排查 401）
-    console.log("[Auth Debug] Current Auth Headers:", getAuthHeaders());
-
-    // ── 真实 SSE 流式通道:连接 /api/chat 代理到 Hermes/OpenClaw Gateway ──
+    // 🔌 真实管线:fetch → 阿里云 /api/chat → Tailscale → MacBook Gateway
     try {
-      const response = await executeWithRetry(() => {
-        return fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-          body: JSON.stringify({
-            messages: updatedMessages.map(({ role, content }) => ({
-              role,
-              content,
-            })),
-            temperature: 0.7,
-            agent_id: currentAgentId,
-            session_id: activeSessionId,
-          }),
-        });
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: updatedMessages.map(({ role, content }) => ({
+            role,
+            content,
+          })),
+          temperature: 0.7,
+        }),
       });
 
       if (!response.ok) {
-        // 🔴 401 鉴权失败：立即清除假 Token 并强制退回登录界面
-        if (response.status === 401) {
-          handleLogout("会话凭证已失效，请重新输入管理员密码");
-          throw new Error("鉴权失败：Token 已过期或无效，已强制退出登录");
-        }
-        throw new Error(`Proxy gateway error (HTTP Status: ${response.status})`);
+        let errDetail = `HTTP ${response.status}`;
+        try {
+          const errBody = await response.json();
+          errDetail = errBody.error || errBody.detail || errDetail;
+        } catch {}
+        throw new Error(errDetail);
       }
 
       const reader = response.body?.getReader();
       if (!reader) {
-        throw new Error("Local proxy stream unreachable.");
+        throw new Error("响应流不可用");
       }
 
       const decoder = new TextDecoder();
       let buffer = "";
       let accumulatedText = "";
 
-      // Stream evaluation loop
+      // 🔥 打字机特效循环:逐块读取 SSE → 实时更新 AI 气泡
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -804,121 +456,73 @@ export default function App() {
 
         for (const line of lines) {
           const trimmed = line.trim();
-          if (!trimmed) continue;
+          if (!trimmed || !trimmed.startsWith("data: ")) continue;
 
-          if (trimmed.startsWith("data: ")) {
-            const rawData = trimmed.slice(6);
-            if (rawData === "[DONE]") continue;
+          const rawData = trimmed.slice(6);
+          if (rawData === "[DONE]") continue;
 
-            try {
-              const parsed = JSON.parse(rawData);
+          try {
+            const parsed = JSON.parse(rawData);
 
-              if (parsed.error) {
-                accumulatedText += `\n\n**[Connection Diagnostics Info]**:\n${parsed.error}`;
-                setSessions((prev) =>
-                  prev.map((s) => {
-                    if (s.id !== activeSessionId) return s;
-                    return {
-                      ...s,
-                      messages: s.messages.map((m) =>
-                        m.id === assistantPlaceholderId
-                          ? { ...m, content: accumulatedText }
-                          : m,
-                      ),
-                    };
-                  }),
-                );
-                if (chatContainerRef.current) {
-                  chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-                }
-                continue;
-              }
-
-              const delta = parsed.choices?.[0]?.delta?.content;
-              if (delta) {
-                accumulatedText += delta;
-
-                // ── 实时解析 <think> 标签:思考态 ↔ 正式回答态动态切换 ──
-                const { isThinking: thinking, reasoningText: reasoning, displayContent } =
-                  parseThinkingState(accumulatedText);
-
-                setIsThinking(thinking);
-                setReasoningText(reasoning);
-
-                setSessions((prev) =>
-                  prev.map((s) => {
-                    if (s.id !== activeSessionId) return s;
-                    return {
-                      ...s,
-                      messages: s.messages.map((m) =>
-                        m.id === assistantPlaceholderId
-                          ? { ...m, content: displayContent }
-                          : m,
-                      ),
-                    };
-                  }),
-                );
-                if (chatContainerRef.current) {
-                  chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-                }
-              }
-            } catch (jsonErr) {
-              // Gracefully bypass partial JSON chunks
+            // Gateway 返回的错误
+            if (parsed.error) {
+              accumulatedText += `\n\n⚠️ ${parsed.error.message || parsed.error}`;
+              setSessions((prev) =>
+                prev.map((s) => {
+                  if (s.id !== activeSessionId) return s;
+                  return {
+                    ...s,
+                    messages: s.messages.map((m) =>
+                      m.id === assistantPlaceholderId
+                        ? { ...m, content: accumulatedText }
+                        : m,
+                    ),
+                  };
+                }),
+              );
+              continue;
             }
+
+            // 标准 OpenAI delta.content 聚合
+            const delta = parsed.choices?.[0]?.delta?.content;
+            if (delta) {
+              accumulatedText += delta;
+              setSessions((prev) =>
+                prev.map((s) => {
+                  if (s.id !== activeSessionId) return s;
+                  return {
+                    ...s,
+                    messages: s.messages.map((m) =>
+                      m.id === assistantPlaceholderId
+                        ? { ...m, content: accumulatedText }
+                        : m,
+                    ),
+                  };
+                }),
+              );
+            }
+          } catch {
+            // 忽略不完整的 JSON chunk(SSE 分包所致)
           }
         }
       }
 
-      // Flush residue buffer
+      // 处理残留缓冲区
       if (buffer.trim().startsWith("data: ")) {
         const trimmedData = buffer.trim().slice(6);
         if (trimmedData !== "[DONE]") {
           try {
             const parsed = JSON.parse(trimmedData);
             const delta = parsed.choices?.[0]?.delta?.content;
-            if (delta) {
-              accumulatedText += delta;
-            }
-          } catch (e) {}
+            if (delta) accumulatedText += delta;
+          } catch {}
         }
       }
 
-      // ── 阅后即焚:仅保留 displayContent,思考文本不入最终持久化 ──
-      const finalParsed = parseThinkingState(accumulatedText);
-      const cleanContent = finalParsed.displayContent || accumulatedText;
-
-      // 清理思考态状态
-      setIsThinking(false);
-      setReasoningText("");
-      setStreamingMessageId(null);
-
-      const finalCompletedSession: ChatSession = {
-        ...updatedSession,
-        messages: [
-          ...updatedMessages,
-          {
-            ...assistantPlaceholder,
-            content:
-              cleanContent ||
-              "*服务端返回内容为空。请检查 MacBook 上的大模型后台服务是否已正确绑定 8000 端口。*",
-          },
-        ],
-      };
-
-      setSessions((prev) =>
-        prev.map((s) => (s.id === activeSessionId ? finalCompletedSession : s)),
-      );
-      if (AGENTS[currentAgentId]?.runtime !== "openclaw") {
-        syncLocalSession(finalCompletedSession);
-      }
-    } catch (err: any) {
-      console.error("Dialogue failure:", err);
-
-      setIsThinking(false);
-      setReasoningText("");
-      setStreamingMessageId(null);
-
-      const errorFallbackText = `\n\n❌ **对端网关桥接离线**\n\n无法成功将您的提示指令转发到位于 \`100.83.118.16:8000\` 的远程大语言模型服务器。\n\n* **诊断详情信息**: \`${err?.message || err}\`\n* **推荐排查指引**: 请确认您的 Tailscale 隧道客户端连接状态是否通畅。如有必要,可点击右侧 Bento 快捷指令面板中的 **"重启 Llama 模型服务"** 按钮来重新载入对端服务进程。`;
+      // 完成:写入最终内容
+      const finalContent =
+        accumulatedText ||
+        "⚠️ MacBook Gateway 返回了空内容,请检查 AI 服务状态。";
 
       setSessions((prev) =>
         prev.map((s) => {
@@ -927,7 +531,24 @@ export default function App() {
             ...s,
             messages: s.messages.map((m) =>
               m.id === assistantPlaceholderId
-                ? { ...m, content: errorFallbackText }
+                ? { ...m, content: finalContent }
+                : m,
+            ),
+          };
+        }),
+      );
+    } catch (err: any) {
+      console.error("💥 管线中断:", err);
+      const errorMsg = `\n\n❌ **管线中断**\n\n无法将指令转发至 MacBook Gateway(\`100.83.118.16:18789\`)。\n\n> 🩺 诊断:\`${err?.message || err}\`\n> 🔧 请确认:Tailscale 在线 + Gateway 进程存活。`;
+
+      setSessions((prev) =>
+        prev.map((s) => {
+          if (s.id !== activeSessionId) return s;
+          return {
+            ...s,
+            messages: s.messages.map((m) =>
+              m.id === assistantPlaceholderId
+                ? { ...m, content: errorMsg }
                 : m,
             ),
           };
@@ -945,164 +566,10 @@ export default function App() {
     }
   };
 
-  // ── 无限滚动:触顶加载更早的历史记录 + Scroll Anchoring 防跳 ──
-  const handleChatScroll = async () => {
-    const container = chatContainerRef.current;
-    // 🔒 死锁防护:isLoadingHistoryRef 用 ref 消除闭包竞态，hasMoreHistory 控制是否继续分页
-    if (!container || isLoadingHistoryRef.current || !hasMoreHistory || !activeSessionId) return;
-
-    // 触顶阈值:scrollTop ≤ 5px
-    if (container.scrollTop > 5) return;
-
-    const activeSess = sessions.find((s) => s.id === activeSessionId);
-    if (!activeSess) return;
-
-    // 🔒 双锁设置:ref(防闭包竞态) + state(驱动UI)
-    isLoadingHistoryRef.current = true;
-    setIsLoadingHistory(true);
-    const prevScrollHeight = container.scrollHeight;
-
-    try {
-      const nextPage = currentHistoryPage + 1;
-      const res = await fetchWithTimeout(
-        `/api/sessions/${encodeURIComponent(activeSessionId)}/history?page=${nextPage}&limit=30`,
-        { headers: { ...getAuthHeaders() } },
-        3000
-      );
-      if (!res.ok) throw new Error(`Gateway returned HTTP ${res.status}`);
-
-      const data = await res.json();
-      // 🔓 关键修复:只要返回消息不为空,就允许继续翻页(兼容飞书等渠道 hasMore 字段差异)
-      if (data.messages && data.messages.length > 0) {
-        const rawMessages: any[] = data.messages;
-        // 后端已按 createdAt asc 排序（旧→新），直接 prepend，无需 reverse！
-        // 🔧 v6.3 字段标准化：复用 normalizeMessage 确保字段契约一致
-        const olderMessages: Message[] = rawMessages.map(normalizeMessage);
-
-        setSessions((prev) =>
-          prev.map((s) => {
-            if (s.id !== activeSessionId) return s;
-            return { ...s, messages: [...olderMessages, ...s.messages] };
-          }),
-        );
-
-        setCurrentHistoryPage(nextPage);
-        // 🔓 v6.2 契约对齐：信任后端 hasMore（不足 30 条也能正确终止分页）
-        setHasMoreHistory(data.hasMore === true);
-
-        // ── Scroll Anchoring:利用 scrollHeight 差值重置 scrollTop,防止画面跳动 ──
-        requestAnimationFrame(() => {
-          if (chatContainerRef.current) {
-            chatContainerRef.current.scrollTop =
-              chatContainerRef.current.scrollHeight - prevScrollHeight;
-          }
-        });
-      } else {
-        // 消息为空 → 确已翻到底,关闭分页
-        setHasMoreHistory(false);
-      }
-    } catch (err) {
-      console.error("Failed to load more history:", err);
-      // ⚠️ 网络异常时不把 hasMoreHistory 直接设为 false(保留重试可能,但锁已释放)
-      // 🔓 不修改 hasMoreHistory,等下次触顶再试
-    } finally {
-      // 🔓 死锁释放:无论成功/失败/异常,双锁必须在 finally 中释放!
-      isLoadingHistoryRef.current = false;
-      setIsLoadingHistory(false);
-    }
-  };
-
-  // ── 鉴权守卫：未登录时渲染登录界面，禁止访问主聊天 ──
-  if (!isAdmin) {
-    return (
-      <div className={`flex h-screen overflow-hidden ${isDarkMode ? "dark" : ""}`}>
-        <div className="flex-1 flex items-center justify-center bg-gradient-to-br from-[#f0f4f9] via-white to-zinc-50 dark:from-[#0f0e13] dark:via-[#131118] dark:to-zinc-950 p-6">
-          {/* 背景装饰 */}
-          <div className="absolute inset-0 overflow-hidden pointer-events-none select-none">
-            <div className="absolute -top-40 -right-40 w-96 h-96 bg-blue-400/10 dark:bg-blue-500/5 rounded-full blur-3xl" />
-            <div className="absolute -bottom-32 -left-32 w-80 h-80 bg-purple-400/10 dark:bg-purple-500/5 rounded-full blur-3xl" />
-          </div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 20, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            transition={{ duration: 0.5, ease: "easeOut" }}
-            className="relative z-10 w-full max-w-md"
-          >
-            {/* 品牌区域 */}
-            <div className="text-center mb-8">
-              <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500/10 to-purple-500/10 dark:from-blue-500/20 dark:to-purple-500/20 border border-blue-200/30 dark:border-blue-500/20 mb-4 shadow-sm">
-                <Sparkles className="w-8 h-8 text-blue-600 dark:text-blue-400" />
-              </div>
-              <h1 className="text-xl font-bold tracking-tight text-zinc-900 dark:text-white font-sans">
-                Nexus 节点机
-              </h1>
-              <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1.5">
-                多智能体协作控制台 · 需要管理员认证
-              </p>
-            </div>
-
-            {/* 登录卡片 */}
-            <div className="bg-white/80 dark:bg-[#1a1820]/80 backdrop-blur-xl border border-zinc-200/50 dark:border-zinc-800/50 rounded-2xl p-6 shadow-lg">
-              {loginError && (
-                <motion.div
-                  initial={{ opacity: 0, y: -5 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="mb-4 px-4 py-3 rounded-xl bg-red-50 dark:bg-red-950/20 border border-red-200/50 dark:border-red-800/30 text-red-700 dark:text-red-400 text-sm flex items-start gap-2.5"
-                >
-                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>{loginError}</span>
-                </motion.div>
-              )}
-
-              <form onSubmit={handleLogin} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold text-zinc-600 dark:text-zinc-400 mb-1.5 tracking-wide">
-                    管理员密码
-                  </label>
-                  <input
-                    type="password"
-                    value={loginPassword}
-                    onChange={(e) => {
-                      setLoginPassword(e.target.value);
-                      if (loginError) setLoginError("");
-                    }}
-                    placeholder="请输入管理员密码"
-                    autoFocus
-                    className="w-full px-4 py-2.5 rounded-xl bg-zinc-50 dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-700/50 text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400/50 transition-all"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleLogin(e);
-                    }}
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={!loginPassword.trim()}
-                  className={`w-full py-2.5 rounded-xl text-sm font-semibold transition-all duration-200 ${
-                    loginPassword.trim()
-                      ? "bg-blue-600 hover:bg-blue-700 text-white shadow-sm shadow-blue-500/20 active:scale-[0.98] cursor-pointer"
-                      : "bg-zinc-100 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-600 cursor-not-allowed"
-                  }`}
-                >
-                  认证并进入控制台
-                </button>
-              </form>
-
-              <p className="mt-4 text-center text-[11px] text-zinc-400 dark:text-zinc-500">
-                Nexus 节点机 v5 · 仅限授权管理员访问
-              </p>
-            </div>
-          </motion.div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className={`flex h-screen overflow-hidden ${isDarkMode ? "dark" : ""}`}>
       {/* Desktop Sidebar */}
-      <div className="relative z-20 flex-shrink-0 hidden md:flex flex-col w-[320px] bg-zinc-50/50 dark:bg-[#0f0e13]/80 border-r border-zinc-200 dark:border-zinc-800/80 h-full backdrop-blur-md">
+      <div className="relative z-20 flex-shrink-0 hidden md:flex flex-col w-[320px] bg-zinc-50/50 dark:bg-[#1e1f20] border-r border-zinc-200 dark:border-[#333538] h-full backdrop-blur-md">
         <Sidebar
           sessions={sessions}
           activeSessionId={activeSessionId}
@@ -1168,9 +635,9 @@ export default function App() {
       </AnimatePresence>
 
       {/* Main Container */}
-      <div className="flex-1 flex flex-col min-w-0 relative z-10 bg-white/10 dark:bg-zinc-950/20 backdrop-blur-[6px] h-full overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 relative z-10 bg-white/10 dark:bg-[#131314] backdrop-blur-[6px] h-full overflow-hidden">
         {/* Dynamic header bar containing connection credentials */}
-        <header className="min-h-[4rem] py-2 md:py-0 flex flex-wrap items-center justify-between px-4 md:px-8 gap-y-2 gap-x-4 bg-white/20 dark:bg-[#131118]/30 backdrop-blur-md border-b border-zinc-200/20 dark:border-zinc-800/20 z-10 select-none">
+        <header className="min-h-[4rem] py-2 md:py-0 flex flex-wrap items-center justify-between px-4 md:px-8 gap-y-2 gap-x-4 bg-white/20 dark:bg-[#131118]/80 backdrop-blur-md border-b border-zinc-200/20 dark:border-[#333538] z-30 select-none">
           <div className="flex items-center flex-wrap gap-1 md:gap-3">
             <button
               onClick={() => setIsMobileSidebarOpen(true)}
@@ -1252,9 +719,9 @@ export default function App() {
                     <div className="flex gap-2.5">
                       <Info className="w-4 h-4 shrink-0 text-amber-500 mt-0.5" />
                       <div className="text-[12px] leading-relaxed text-zinc-600 dark:text-zinc-400">
-                        <strong className="text-zinc-900 dark:text-zinc-150 font-semibold font-sans">网络接入建议：</strong>
+                        <strong className="text-zinc-900 dark:text-zinc-150 font-semibold font-sans">网络接入建议:</strong>
                         <span className="font-sans">
-                          本应用程序通过内置的 Tailscale 专用隧道，将智能会话操作直接委托给您的远程 MacBook 宿主机（基于接口地址 <code>100.83.118.16:8000</code>）。如果提示词未正常响应，请务必确认您的本地 Mac 运行守护进程正常工作。
+                          本应用程序通过内置的 Tailscale 专用隧道,将智能会话操作直接委托给您的远程 MacBook 宿主机(基于接口地址 <code>100.83.118.16:8000</code>)。如果提示词未正常响应,请务必确认您的本地 Mac 运行守护进程正常工作。
                         </span>
                       </div>
                     </div>
@@ -1262,7 +729,7 @@ export default function App() {
                 )}
               </AnimatePresence>
             </div>
-            
+
             <button
               onClick={() => {
                 const newTheme = !isDarkMode;
@@ -1296,7 +763,7 @@ export default function App() {
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95, y: 10 }}
                 onClick={(e) => e.stopPropagation()}
-                className="bg-white dark:bg-zinc-900 border border-zinc-200/50 dark:border-zinc-800/50 rounded-2xl p-6 shadow-2xl max-w-sm w-full flex flex-col gap-5 relative overflow-hidden"
+                className="bg-white dark:bg-[#1e1f20] border border-zinc-200/50 dark:border-[#333538] rounded-2xl p-6 shadow-2xl max-w-sm w-full flex flex-col gap-5 relative overflow-hidden"
               >
                 <div className="absolute top-0 left-0 w-full h-1 bg-red-500"></div>
                 <div className="flex items-start justify-between">
@@ -1321,7 +788,7 @@ export default function App() {
                   </button>
                 </div>
 
-                <div className="bg-zinc-50 dark:bg-[#121215] border border-zinc-200/50 dark:border-zinc-800 p-4 rounded-xl">
+                <div className="bg-zinc-50 dark:bg-[#131314] border border-zinc-200/50 dark:border-[#333538] p-4 rounded-xl">
                   <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200 font-mono tracking-tight leading-relaxed">
                     {networkError}
                   </p>
@@ -1361,7 +828,7 @@ export default function App() {
         <div className="flex-1 flex overflow-hidden">
           {/* Chat Panel Column */}
           <div
-            className={`flex-1 relative h-full bg-zinc-50/30 dark:bg-[#0f0e13]/10 ${
+            className={`flex-1 relative h-full flex flex-col bg-zinc-50/30 dark:bg-[#131314] ${
               activeTab === "chat" ? "flex" : "hidden md:flex"
             }`}
           >
@@ -1374,10 +841,11 @@ export default function App() {
                 {/* Scroll Zone */}
                 <div
                   ref={chatContainerRef}
-                  onScroll={handleChatScroll}
-                  className="absolute inset-0 overflow-y-auto px-6 py-6 pb-44 space-y-6 scrollbar-thin flex flex-col"
+                  onScroll={handleScroll}
+                  className="flex-1 overflow-y-auto py-6 pb-44 scrollbar-thin relative flex flex-col w-full"
                 >
-                  {activeSession && activeSession.messages.length === 0 ? (
+                  <div className="w-[95%] md:w-[90%] xl:w-[80%] max-w-none mx-auto flex flex-col flex-1 space-y-6">
+                    {activeSession && activeSession.messages.length === 0 ? (
                     <div className="flex-1 flex flex-col items-center justify-center max-w-lg mx-auto text-center space-y-5 pt-12 pb-16 select-none min-h-[55vh]">
                       <div
                         className="h-14 w-14 rounded-2xl bg-zinc-50/80 dark:bg-zinc-900/80 border border-zinc-200/50 dark:border-zinc-800/50 flex items-center justify-center text-2xl shadow-sm"
@@ -1408,42 +876,12 @@ export default function App() {
                       </div>
                     </div>
                   ) : (
-                    <div className="space-y-6 flex-1 flex flex-col pb-20 w-[97%] md:w-[95%] xl:w-[90%] max-w-none mx-auto">
-                      {/* ── 无限滚动:顶部加载指示器 ── */}
-                      {isLoadingHistory && (
-                        <div className="flex items-center justify-center py-4 gap-2 text-zinc-400 dark:text-zinc-500 select-none">
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          <span className="text-[11px] font-mono">正在加载更早的对话记录...</span>
-                        </div>
-                      )}
+                    <div className="space-y-6 flex-1 flex flex-col pb-20 w-full">
                       <AnimatePresence initial={false}>
-                        {(() => {
-                          const filteredMsgs = (activeSession?.messages || []).filter((msg) => !msg.content.includes("上下文压缩"));
-                          console.log("【3. React 最终渲染的 messages 状态】:", filteredMsgs);
-                          return filteredMsgs.map((msg, index) => {
+                        {activeSession?.messages.map((msg) => {
                           const isUser = msg.role === "user";
-                          const isCurrentlyGenerating = isGenerating && !isUser && index === (activeSession?.messages || []).filter((msg) => !msg.content.includes("上下文压缩")).length - 1;
                           const msgAgent =
                             AGENTS[activeSession?.agentId || "hermes"];
-
-                          // ── 流式全包裹：只要还在生成，锁在 AIGeneratingState 流光框内，不渲染任何外部气泡容器 ──
-                          if (isCurrentlyGenerating) {
-                            return (
-                              <motion.div
-                                key={msg.id}
-                                initial={{ opacity: 0, y: 15, scale: 0.98 }}
-                                animate={{ opacity: 1, y: 0, scale: 1 }}
-                                exit={{ opacity: 0, scale: 0.97 }}
-                                transition={{ duration: 0.22, ease: "easeOut" }}
-                              >
-                                <AIGeneratingState
-                                  agentName={msgAgent?.name || "Agent"}
-                                  reasoningText={msg.content}
-                                />
-                              </motion.div>
-                            );
-                          }
-
                           return (
                             <motion.div
                               key={msg.id}
@@ -1451,7 +889,7 @@ export default function App() {
                               animate={{ opacity: 1, y: 0, scale: 1 }}
                               exit={{ opacity: 0, scale: 0.97 }}
                               transition={{ duration: 0.22, ease: "easeOut" }}
-                              className={`flex gap-3.5 max-w-4xl ${
+                              className={`flex gap-3.5 w-full md:max-w-[90%] xl:max-w-[85%] ${
                                 isUser ? "ml-auto flex-row-reverse" : "mr-auto"
                               }`}
                             >
@@ -1486,31 +924,51 @@ export default function App() {
 
                                 {isUser ? (
                                   <div
-                                    className="px-5 py-3 rounded-2xl bg-[#f0f4f9] text-[13px] leading-relaxed text-zinc-900"
+                                    className="px-5 py-3 rounded-2xl bg-[#f0f4f9] dark:bg-[#303134] text-[13px] leading-relaxed text-zinc-900 dark:text-zinc-100 shadow-xs border border-zinc-200/20 dark:border-zinc-700/50 [&_p]:!text-zinc-900 dark:[&_p]:!text-zinc-100 [&_ul]:!text-zinc-900 dark:[&_ul]:!text-zinc-100 [&_ol]:!text-zinc-900 dark:[&_ol]:!text-zinc-100 [&_li]:!text-zinc-900 dark:[&_li]:!text-zinc-100 [&_strong]:!text-zinc-950 dark:[&_strong]:!text-white [&_h1]:!text-zinc-950 dark:[&_h1]:!text-white [&_h2]:!text-zinc-950 dark:[&_h2]:!text-white [&_h3]:!text-zinc-950 dark:[&_h3]:!text-white [&_h4]:!text-zinc-950 dark:[&_h4]:!text-white [&_h5]:!text-zinc-950 dark:[&_h5]:!text-white [&_h6]:!text-zinc-950 dark:[&_h6]:!text-white"
                                   >
                                     <MarkdownRenderer content={msg.content} />
                                   </div>
+                                ) : !msg.content && (isGenerating || msg.id === "mock-generating") ? (
+                                  /* Gorgeous Active Loading Card using the beautiful RefStyleMockup design system */
+                                  <div className="space-y-4 w-full flex-col flex items-start max-w-full">
+                                    <AIGeneratingState agentName={msgAgent?.name || "Hermes"} />
+                                    {msg.id === "mock-generating" && (
+                                      <div className="pt-2 transition-all">
+                                        <div className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500 mb-2.5 px-1 tracking-wider uppercase flex items-center gap-1.5 select-none">
+                                          <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-ping"></span>
+                                          ❖ 与高保真交互参考图对比 (对比预览)
+                                        </div>
+                                        <RefStyleMockup />
+                                      </div>
+                                    )}
+                                  </div>
                                 ) : (
-                                  /* 生成结束：华丽变身为正式 Markdown 气泡 */
-                                  <div className="space-y-3 w-full max-w-xl">
+                                  /* Standard Assistant message with pristine glassmorphic border and background */
+                                  <div className="space-y-3 w-full max-w-full">
                                     <div
                                       className="text-[13px] leading-relaxed text-zinc-900"
                                     >
                                       <MarkdownRenderer content={msg.content} />
                                     </div>
+                                    {msg.id === "mock-completed" && (
+                                      <div className="pt-1 transition-all">
+                                        <RefStyleMockup />
+                                      </div>
+                                    )}
                                   </div>
                                 )}
                               </div>
                             </motion.div>
                           );
-                        })})}
+                        })}
                       </AnimatePresence>
                     </div>
                   )}
+                  </div>
                 </div>
 
                 {/* Bottom Dock Input Zone */}
-                <div className="absolute bottom-0 left-0 right-0 p-4 md:p-6 bg-transparent z-10">
+                <div className="absolute bottom-0 left-0 right-0 pt-16 pb-4 md:pb-6 px-4 md:px-6 bg-gradient-to-t from-zinc-50 via-zinc-50/95 to-transparent dark:from-[#131314] dark:via-[#131314]/95 dark:to-transparent z-10">
                   {!activeSessionId ? (
                     <div className="flex items-center justify-center py-4 select-none">
                       <span className="text-sm font-medium text-zinc-500 dark:text-zinc-500/80 bg-zinc-100 dark:bg-zinc-900/50 px-6 py-2.5 rounded-full border border-zinc-200/50 dark:border-zinc-800/50">
@@ -1518,15 +976,28 @@ export default function App() {
                       </span>
                     </div>
                   ) : (
+                    /* [OpenClaw 接驳点]:此处绑定 handleSubmitMessage 发送逻辑 */
                     <form
                       onSubmit={handleSubmitMessage}
-                      className="w-[97%] md:w-[92%] xl:w-[88%] max-w-5xl mx-auto relative group animate-fade-in"
+                      className="w-[95%] md:w-[85%] xl:w-[75%] max-w-5xl mx-auto relative group animate-fade-in"
                     >
-                      {/* Outer boundary layer which manages linear glowing border */}
+                      <div className="mb-2.5 px-1 text-center sm:text-right select-none text-[10px] text-zinc-450 dark:text-zinc-400 font-normal font-sans">
+                        按{" "}
+                        <kbd className="px-1.5 py-0.5 rounded border border-zinc-200/50 dark:border-[#333538] bg-zinc-50 dark:bg-zinc-900/60 font-mono text-[9px]">
+                          Enter
+                        </kbd>{" "}
+                        发送消息,按{" "}
+                        <kbd className="px-1.5 py-0.5 rounded border border-zinc-200/50 dark:border-[#333538] bg-zinc-50 dark:bg-zinc-900/60 font-mono text-[9px]">
+                          Shift + Enter
+                        </kbd>{" "}
+                        录入换行。
+                      </div>
+
+                      {/* Outer boundary layer which manages linear glowing border (synced with AIGeneratingState) */}
                       <div className="relative p-[1.5px] rounded-[24px] shadow-[0_12px_40px_rgba(0,0,0,0.06)] dark:shadow-[0_12px_40px_rgba(0,0,0,0.25)] bg-zinc-200/60 dark:bg-[#333538] group-hover:bg-zinc-300/60 dark:group-hover:bg-[#434548] focus-within:bg-zinc-400 dark:focus-within:bg-zinc-500 transition-all duration-300">
                         {/* Inner elegant layout with pure white background */}
                         <div className="relative z-10 flex items-center gap-3 bg-white/95 dark:bg-[#1e1f20]/95 backdrop-blur-md rounded-[23px] px-5 py-2.5 transition duration-300">
-                          
+
                           {/* Text input zone */}
                           <textarea
                             ref={inputRef}
@@ -1539,7 +1010,7 @@ export default function App() {
                             placeholder={
                               AGENTS[currentAgentId]?.placeholder ||
                               !AGENTS[currentAgentId]?.active
-                                ? `${AGENTS[currentAgentId]?.alias} 尚未接入，无法发送消息`
+                                ? `${AGENTS[currentAgentId]?.alias} 尚未接入,无法发送消息`
                                 : `Describe an app and let Gemini do the rest`
                             }
                             className="flex-1 resize-none bg-transparent py-1.5 text-[14px] leading-relaxed text-zinc-800 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none min-h-[24px]"
@@ -1596,21 +1067,27 @@ export default function App() {
                           </div>
                         </div>
                       </div>
-
-                      <div className="mt-2 text-center text-[10px] text-zinc-400 dark:text-zinc-500 font-normal font-sans select-none">
-                        按{" "}
-                        <kbd className="px-1.5 py-0.5 rounded border border-zinc-200/50 dark:border-zinc-800/40 bg-white/60 dark:bg-zinc-900/60 font-mono text-[9px]">
-                          Enter
-                        </kbd>{" "}
-                        发送消息,按{" "}
-                        <kbd className="px-1.5 py-0.5 rounded border border-zinc-200/50 dark:border-zinc-800/40 bg-white/60 dark:bg-zinc-900/60 font-mono text-[9px]">
-                          Shift + Enter
-                        </kbd>{" "}
-                        录入换行。
-                      </div>
                     </form>
                   )}
                 </div>
+
+                {/* Scroll to Bottom Button */}
+                <AnimatePresence>
+                  {showScrollToBottom && (
+                    <motion.button
+                      initial={{ opacity: 0, y: 10, scale: 0.9 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 10, scale: 0.9 }}
+                      transition={{ type: "spring", stiffness: 400, damping: 25 }}
+                      onClick={scrollToBottom}
+                      className="absolute bottom-32 right-6 md:right-10 z-[15] p-2.5 rounded-xl bg-white dark:bg-white text-zinc-600 dark:text-zinc-700 shadow-[0_4px_14px_rgba(0,0,0,0.15)] border border-zinc-200/60 dark:border-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-100 hover:text-blue-600 dark:hover:text-blue-600 transition-colors"
+                      aria-label="回到底部"
+                      title="回到底部"
+                    >
+                      <ArrowDown className="w-5 h-5" />
+                    </motion.button>
+                  )}
+                </AnimatePresence>
               </>
             )}
           </div>
@@ -1619,8 +1096,10 @@ export default function App() {
         </div>
 
         {/* Floating background trace bar for complete full-screen routing metrics */}
-        <div className="hidden xl:block bg-zinc-100/50 dark:bg-zinc-950/40 border-t border-zinc-200/30 dark:border-zinc-900/10 px-6 py-2">
-          <NetworkStatusBar />
+        <div className="hidden xl:block bg-zinc-100/50 dark:bg-[#131114] border-t border-zinc-200/30 dark:border-[#333538]/50 py-2">
+          <div className="w-[95%] md:w-[90%] xl:w-[80%] max-w-none mx-auto px-1 md:px-0">
+            <NetworkStatusBar />
+          </div>
         </div>
       </div>
 
@@ -1633,7 +1112,7 @@ export default function App() {
               try {
                 const response = await fetch("/api/agents", {
                   method: "POST",
-                  headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+                  headers: { "Content-Type": "application/json" },
                   body: JSON.stringify(newAgent),
                 });
                 if (response.ok) {

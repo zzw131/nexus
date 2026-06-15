@@ -176,24 +176,24 @@ export default function ControlCenter({
                   <Sparkles className="w-3 h-3 text-purple-500" /> 核心认知大脑
                 </span>
                 
-                <div className="p-4 bg-zinc-900 border border-zinc-800 rounded-xl flex items-center justify-between gap-3 shadow-sm">
+                <div className="p-4 bg-zinc-50 dark:bg-[#131314] border border-zinc-200 dark:border-[#333538] rounded-xl flex items-center justify-between gap-3 shadow-sm">
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center text-xl select-none">
+                    <div className="w-10 h-10 rounded-lg bg-white dark:bg-[#1e1f20] border border-zinc-200 dark:border-zinc-700/50 flex items-center justify-center text-xl select-none shadow-sm">
                       {activeAgentEmoji}
                     </div>
                     <div>
-                      <h4 className="text-[14px] font-bold text-white font-sans">
+                      <h4 className="text-[14px] font-bold text-zinc-800 dark:text-zinc-100 font-sans">
                         {activeAgentName}
                       </h4>
-                      <p className="text-[11px] text-zinc-400 mt-0.5">
+                      <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
                         {activeAgentReady ? "多模型认知能力就绪" : "未准备就绪"}
                       </p>
                     </div>
                   </div>
                   <span className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-medium border leading-none ${
                     activeAgentReady 
-                      ? "bg-emerald-950/40 border-emerald-900/40 text-emerald-400" 
-                      : "bg-amber-950/40 border-amber-900/40 text-amber-400"
+                      ? "bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900/40 text-emerald-600 dark:text-emerald-400" 
+                      : "bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900/40 text-amber-600 dark:text-amber-400"
                   }`}>
                     {activeAgentReady ? "就绪" : "待命"}
                   </span>
