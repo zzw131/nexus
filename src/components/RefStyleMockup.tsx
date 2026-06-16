@@ -32,10 +32,10 @@ export function RefStyleMockup() {
       {/* 2. High-Density Typography Card Body */}
       <div className="p-6 md:p-8 pt-4 md:pt-5 space-y-2 select-text rounded-b-[22.5px]">
         <h4 className="text-base font-bold text-zinc-900 dark:text-zinc-100 font-sans tracking-tight">
-          Zzw · 高保真极速响应
+          Add low-latency responses
         </h4>
         <p className="text-[13px] text-zinc-500 dark:text-zinc-400 leading-relaxed font-normal">
-          邹志伟（Zzw）专属智能渲染引擎，采用细描边扫光与矢量高斯模糊技术，为远程 AI 调度面板提供极致视觉交付体验。
+          Add lightning-fast, real-time responses to your app using Flash-Lite. Perfect for instant auto-completes, or conversational agents that feel alive.
         </p>
       </div>
       </div>

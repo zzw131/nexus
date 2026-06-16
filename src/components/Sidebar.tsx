@@ -119,7 +119,7 @@ export default function Sidebar({
               </div>
               <div className="flex-1 flex items-center justify-between select-none">
                 <h1 className="text-[17px] font-medium tracking-tight text-zinc-900 dark:text-zinc-100 font-sans flex items-center gap-2 select-none">
-                  Zzw · Nexus
+                  Nexus
                 </h1>
               </div>
             </div>
@@ -310,7 +310,7 @@ export default function Sidebar({
                     控制台配置
                   </h3>
                   <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-widest font-bold">
-                    系统偏好设置
+                    SYSTEM PREFERENCES
                   </p>
                 </div>
                 <button
