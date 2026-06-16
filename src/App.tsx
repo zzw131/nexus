@@ -42,6 +42,8 @@ import { useRetry } from "./hooks/useRetry";
 
 import { RenameSessionModal } from "./components/RenameSessionModal";
 import { ModelSelector } from "./components/ModelSelector";
+import { useToast } from "./contexts/ToastContext";
+import { PlayfulSessionLoader } from "./components/PlayfulSessionLoader";
 
 const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 1500) => {
   const controller = new AbortController();
@@ -62,53 +64,12 @@ export default function App() {
   // agent_log 思考流状态（喂给极光框）
   const [reasoningText, setReasoningText] = useState<string>("");
   const [isThinkingUI, setIsThinkingUI] = useState<boolean>(false);
+  const { addToast } = useToast();
+  const [isSessionLoading, setIsSessionLoading] = useState<boolean>(false);
 
-  const [sessions, setSessions] = useState<ChatSession[]>([
-    {
-      id: "sess-mock-1",
-      title: "关于高保真界面的修改方案",
-      agentId: "hermes",
-      messages: [
-        {
-          id: "m1",
-          role: "user",
-          content: "请帮我配置低核心延迟的 Flash-Lite 极速响应，并将加载动效 and 生成卡片修改为细描边、扫光形式。",
-          timestamp: new Date(Date.now() - 3600000).toLocaleTimeString("zh-CN", { hour12: false }),
-        },
-        {
-          id: "mock-generating",
-          role: "assistant",
-          content: "",
-          timestamp: new Date(Date.now() - 3500000).toLocaleTimeString("zh-CN", { hour12: false }),
-        },
-        {
-          id: "m3",
-          role: "user",
-          content: "扫光和N字母图标的细节非常棒！渲染完成后的卡片可以一并展示出来吗？",
-          timestamp: new Date(Date.now() - 3400000).toLocaleTimeString("zh-CN", { hour12: false }),
-        },
-        {
-          id: "mock-completed",
-          role: "assistant",
-          content: "**[⚡️ Hermes 核心大脑]**\n卡片渲染任务已完成，这是升级细描边和重构后的最终高保真交付物：",
-          timestamp: new Date(Date.now() - 3300000).toLocaleTimeString("zh-CN", { hour12: false }),
-        }
-      ]
-    },
-    {
-      id: "sess-mock-2",
-      title: "架构审查",
-      agentId: "hermes",
-      messages: []
-    },
-    {
-      id: "sess-mock-3",
-      title: "产品文档补充",
-      agentId: "qwen",
-      messages: []
-    }
-  ]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>("sess-mock-1");
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState<boolean>(true);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [input, setInput] = useState<string>("");
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isInputFocused, setIsInputFocused] = useState<boolean>(false);
@@ -303,37 +264,39 @@ export default function App() {
     }
   }, [sessions, activeSessionId, isGenerating]);
 
-  // Fetch all sessions：OpenClaw Agent 从 Gateway 实时拉取（Source of Truth），
-  // Hermes 从本地 history.json 读取
+  // 🔌 持久化穿透：从 Gateway + 本地 history.json 拉取真实会话列表
   useEffect(() => {
     const fetchAllSessions = async () => {
       try {
-        /* 注释后端请求，改用本地模拟
+        setSessionsLoading(true);
         let allSessions: ChatSession[] = [];
 
         // ── 1. 本地 Hermes 会话 ──
-        const historyRes = await fetchWithTimeout("/api/history", {}, 1200);
-        if (historyRes.ok) {
-          const localSessions = await historyRes.json();
-          allSessions = [...localSessions];
+        try {
+          const historyRes = await fetchWithTimeout("/api/history", {}, 1200);
+          if (historyRes.ok) {
+            const localSessions = await historyRes.json();
+            allSessions = [...localSessions];
+          }
+        } catch (e) {
+          console.error("Local history unavailable:", e);
         }
 
-        // ── 2. OpenClaw 会话：从 Gateway 100% 实时拉取（不读本地 history.json）──
+        // ── 2. OpenClaw 会话：从 Gateway 100% 实时拉取 ──
         try {
-          const clawRes = await fetchWithTimeout("/api/sessions", {}, 1200);
+          const clawRes = await fetchWithTimeout("/api/sessions", {}, 2000);
           if (clawRes.ok) {
             const clawSessions = await clawRes.json();
             const mappedClawSessions: ChatSession[] = clawSessions.map(
               (cs: any) => {
-                // 根据 agentId 映射到前端的 agent_id
                 let frontendAgentId = "openclaw-main";
                 if (cs.agentId === "jianshen")
                   frontendAgentId = "openclaw-jianshen";
 
                 return {
                   id: cs.key,
-                  title: cs.label || cs.displayName || "未命名会话",
-                  messages: [], // 消息按需实时拉取
+                  title: cs.displayName || cs.label || "未命名会话",
+                  messages: [],
                   createdAt: cs.updatedAt
                     ? new Date(cs.updatedAt).toISOString()
                     : new Date().toISOString(),
@@ -366,82 +329,13 @@ export default function App() {
           ) {
             setActiveSessionId(savedActiveId);
           } else {
-            setActiveSessionId(null);
+            setActiveSessionId(allSessions[0]?.id || null);
           }
-        } else {
-        */
-          const mockSessions: ChatSession[] = [
-            {
-              id: "mock-1",
-              title: "前端架构优化讨论",
-              agentId: "claude",
-              createdAt: new Date(Date.now() - 3600000).toISOString(),
-              messages: [
-                { id: "m1", role: "user", content: "我们应该如何优化目前的 React 组件结构？", timestamp: "10:00" },
-                { id: "m2", role: "assistant", content: "建议将业务逻辑抽离到 hooks 中，保持组件纯粹，并使用 Context 进行状态共享。", timestamp: "10:02" },
-              ]
-            },
-            {
-              id: "mock-new-claude",
-              title: "⚡ 工程高效自动化 CLI 脚本重构",
-              agentId: "claude",
-              createdAt: new Date(Date.now() - 15 * 60000).toISOString(),
-              messages: [
-                { id: "mc-u1", role: "user", content: "如何编写带有自检功能的 TypeScript 重构 CLI 脚本？", timestamp: "10:15" },
-                { id: "mc-a1", role: "assistant", content: "可以结合 `ts-morph` 库进行语意解析，同时配置自动化的 Linter 及 compile pipeline，确保修改方案安全闭环。", timestamp: "10:17" }
-              ]
-            },
-            {
-              id: "mock-2",
-              title: "本地模型调度配置",
-              agentId: "hermes",
-              createdAt: new Date(Date.now() - 7200000).toISOString(),
-              messages: [
-                { id: "m3", role: "user", content: "如何查看本地 llama 引擎的运行状态？", timestamp: "09:00" },
-                { id: "m4", role: "assistant", content: "您可以在右侧的控制台监测面板查看实时的 CPU 负载、内存占用以及连接日志。", timestamp: "09:05" },
-              ]
-            },
-            {
-              id: "mock-3",
-              title: "⚡ 极速低延迟扫光卡片复刻",
-              agentId: "hermes",
-              createdAt: new Date().toISOString(),
-              messages: [
-                { id: "m5", role: "user", content: "请帮我配置低核心延迟的 Flash-Lite 极速响应，并将加载动效 and 生成卡片修改为细描边、扫光形式。", timestamp: "10:10" },
-                { id: "mock-generating", role: "assistant", content: "", timestamp: "10:10" },
-                { id: "m6", role: "user", content: "扫光 and N字母图标的细节非常棒！渲染完成后的卡片可以一并展示出来吗？", timestamp: "10:11" },
-                { id: "mock-completed", role: "assistant", content: "已经利用高保真网格材质与毛玻璃技术，为你深度复刻并输出 **Flash-Lite 极速卡片** 成果物：", timestamp: "10:12" }
-              ]
-            },
-            {
-              id: "mock-openclaw-task",
-              title: "🐂 多智能体全自动并行任务调度",
-              agentId: "openclaw-main",
-              createdAt: new Date(Date.now() - 1800000).toISOString(),
-              messages: [
-                { id: "mo-u1", role: "user", content: "全局的协作牛马，帮我分析目前上游节点积压的数据指标并智能分配下游。", timestamp: "09:30" },
-                { id: "mo-a1", role: "assistant", content: "已自动连接并分析指标：CPU 队列排满，已成功执行降级操作并将 30% 计算量分流到云端代理网关节点处理，预计延迟降低 45%。", timestamp: "09:33" }
-              ]
-            },
-            {
-              id: "mock-openclaw-fitness",
-              title: "💪 30天燃脂塑形定制增肌食谱",
-              agentId: "openclaw-jianshen",
-              createdAt: new Date(Date.now() - 25 * 60000).toISOString(),
-              messages: [
-                { id: "mf-u1", role: "user", content: "我希望制定一个高蛋白、低碳水的燃脂计划，有何建议？", timestamp: "10:05" },
-                { id: "mf-a1", role: "assistant", content: "建议每日碳水维持在 100g 以内，主食以燕麦或糙米替换，增加鸡胸肉及鱼类等优质蛋白质摄入，配合有氧+力量训练实现高效燃脂。", timestamp: "10:08" }
-              ]
-            }
-          ];
-          setSessions(mockSessions);
-          setActiveSessionId("mock-3");
-          setCurrentAgentId("hermes");
-        /*
         }
-        */
       } catch (err) {
         console.error("Failed to fetch sessions:", err);
+      } finally {
+        setSessionsLoading(false);
       }
     };
 
@@ -449,9 +343,14 @@ export default function App() {
   }, [forceUpdate]);
 
   const handleSelectSession = async (id: string) => {
+    if (activeSessionId === id && !isSessionLoading) return;
+    setIsSessionLoading(true);
     setActiveSessionId(id);
     const selectedSess = sessions.find((s) => s.id === id);
-    if (!selectedSess) return;
+    if (!selectedSess) {
+      setIsSessionLoading(false);
+      return;
+    }
 
     if (selectedSess.agentId) {
       setCurrentAgentId(selectedSess.agentId);
@@ -463,28 +362,23 @@ export default function App() {
       id.startsWith("agent:");
 
     if (isRemote) {
-      /* 注释后端请求，改用本地模拟
-      // ✅ 每次点击都实时向 Gateway 拉取最新聊天记录，直接覆盖
+      // 🔌 持久化穿透：每次点击都实时向 Gateway 拉取最新聊天记录
       try {
         const res = await fetchWithTimeout(
           `/api/sessions/${encodeURIComponent(id)}/history`,
           {},
-          1500
+          2000
         );
         if (res.ok) {
           const history = await res.json();
           const rawMessages = Array.isArray(history) ? history : [];
           const mappedMessages: Message[] = rawMessages.map((item: any) => {
-            // Gateway 消息 content 可能是：字符串 / [{type:"text",text:"..."}] 数组 / null / undefined
             let content = "";
             const rawContent = item?.content;
 
             if (typeof rawContent === "string") {
-              // 用户消息：content 通常是纯字符串
               content = rawContent;
             } else if (Array.isArray(rawContent) && rawContent.length > 0) {
-              // 助手消息：content 是内容块数组
-              // 优先级：text > thinking（截取前200字）> tool_use 名称
               const textBlocks = rawContent
                 .filter((b: any) => b?.type === "text" && b?.text)
                 .map((b: any) => b.text);
@@ -492,7 +386,6 @@ export default function App() {
               if (textBlocks.length > 0) {
                 content = textBlocks.join("\n");
               } else {
-                // 无 text 块时，从 thinking 或 toolCall 中提取摘要信息
                 const thinkingBlocks = rawContent
                   .filter((b: any) => b?.type === "thinking" && b?.thinking)
                   .map((b: any) => b.thinking);
@@ -511,7 +404,6 @@ export default function App() {
               }
             }
 
-            // 时间戳处理：Gateway 返回 epoch 毫秒数
             const ts = item?.timestamp;
             const timeStr = ts
               ? new Date(ts).toLocaleTimeString("zh-CN", {
@@ -539,8 +431,8 @@ export default function App() {
       } catch (err) {
         console.error("Failed to fetch session history:", err);
       }
-      */
     }
+    setIsSessionLoading(false);
   };
 
   // 新建会话：OpenClaw Agent 生成 UUID session key，Hermes 走本地
@@ -586,24 +478,48 @@ export default function App() {
     });
   };
 
-  // 重命名会话
-  const handleRenameConfirm = (newName: string) => {
+  // 🔌 持久化穿透：重命名会话 → 后端落盘
+  const handleRenameConfirm = async (newName: string) => {
     const { sessionId } = renameModalState;
-    if (!sessionId) return;
+    if (!sessionId || !newName.trim()) return;
     
+    const trimmedName = newName.trim();
+    
+    // 1. 先更新前端状态（乐观更新）
     setSessions((prev) => {
-      const updated = prev.map((s) => (s.id === sessionId ? { ...s, title: newName } : s));
+      const updated = prev.map((s) => (s.id === sessionId ? { ...s, title: trimmedName } : s));
       const renamedSession = updated.find((s) => s.id === sessionId);
       if (renamedSession && AGENTS[renamedSession.agentId || "hermes"]?.runtime !== "openclaw") {
         syncLocalSession(renamedSession);
       }
       return updated;
     });
+
+    addToast("success", `会话已成功重命名为 "${trimmedName}"！`);
+
+    // 2. 🔌 OpenClaw 会话：持久化 rename 到后端 rename-map.json
+    const sess = sessions.find((s) => s.id === sessionId);
+    if (sess && AGENTS[sess.agentId || "hermes"]?.runtime === "openclaw") {
+      try {
+        const res = await fetch(
+          `/api/sessions/${encodeURIComponent(sessionId)}/rename`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title: trimmedName }),
+          }
+        );
+        if (!res.ok) {
+          console.error("Rename persist failed:", await res.text());
+        }
+      } catch (err) {
+        console.error("Rename API unreachable:", err);
+      }
+    }
   };
 
-  // 本地会话持久化（仅 Hermes 等本地 Agent，OpenClaw 以 Gateway 为 Source of Truth）
+  // 🔌 本地会话持久化（Hermes 等本地 Agent → history.json）
   const syncLocalSession = async (session: ChatSession) => {
-    /* 注释后端请求，改用本地模拟
     try {
       await fetch("/api/history", {
         method: "POST",
@@ -613,7 +529,6 @@ export default function App() {
     } catch (err) {
       console.error("Failed to sync local session:", err);
     }
-    */
   };
 
   const handleAgentSwitch = (newAgentId: string) => {
@@ -1142,7 +1057,12 @@ export default function App() {
                   className="flex-1 overflow-y-auto py-6 pb-44 scrollbar-thin relative flex flex-col w-full"
                 >
                   <div className="w-[95%] md:w-[90%] xl:w-[80%] max-w-none mx-auto flex flex-col flex-1 space-y-6">
-                    {activeSession && activeSession.messages.length === 0 ? (
+                    {isSessionLoading ? (
+                      <PlayfulSessionLoader
+                        agentName={AGENTS[currentAgentId]?.name || "Hermes 核心大脑"}
+                        agentEmoji={AGENTS[currentAgentId]?.emoji || "🧠"}
+                      />
+                    ) : activeSession && activeSession.messages.length === 0 ? (
                     <div className="flex-1 flex flex-col items-center justify-center max-w-lg mx-auto text-center space-y-5 pt-12 pb-16 select-none min-h-[55vh]">
                       <div
                         className="h-14 w-14 rounded-2xl bg-zinc-50/80 dark:bg-zinc-900/80 border border-zinc-200/50 dark:border-zinc-800/50 flex items-center justify-center text-2xl shadow-sm"

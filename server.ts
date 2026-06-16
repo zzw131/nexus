@@ -7,6 +7,7 @@
  * 3. POST /api/chat → SSE 代理 + tool_calls 拦截 → agent_log 注入
  */
 
+import "dotenv/config";
 import express from "express";
 import path from "path";
 import fs from "fs";
@@ -15,17 +16,19 @@ import http from "http";
 const app = express();
 const PORT = 3210;
 const AGENTS_FILE = path.join(process.cwd(), "agents.json");
+const RENAME_MAP_FILE = path.join(process.cwd(), "session-rename-map.json");
+const HISTORY_FILE = path.join(process.cwd(), "history.json");
 
-// ── Gateway 配置 ──
-const GATEWAY_HOST = "127.0.0.1";
-const GATEWAY_PORT = 18789;
-const GATEWAY_TOKEN = "0e41fa7f04c5cca00fa7d492e60fdf75769d8fc99cb218f7";
+// ── Gateway 配置（从 .env 读取，支持回退默认值）──
+const GATEWAY_HOST = process.env.GATEWAY_HOST || "100.83.118.16";
+const GATEWAY_PORT = Number(process.env.GATEWAY_PORT) || 18789;
+const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || "0e41fa7f04c5cca00fa7d492e60fdf75769d8fc99cb218f7";
 const GATEWAY_CHAT_PATH = "/v1/chat/completions";
 
-// ── Hermes 配置 ──
-const HERMES_HOST = "100.83.118.16";
-const HERMES_PORT = 8000;
-const HERMES_TOKEN = "43847f73aa132c3abfa9b076eb1dd7ff56b08e06b651a640";
+// ── Hermes 配置（从 .env 读取，支持回退默认值）──
+const HERMES_HOST = process.env.HERMES_HOST || "100.83.118.16";
+const HERMES_PORT = Number(process.env.HERMES_PORT) || 8000;
+const HERMES_TOKEN = process.env.HERMES_TOKEN || "43847f73aa132c3abfa9b076eb1dd7ff56b08e06b651a640";
 
 // ── 默认 Agents 数据 ──
 const DEFAULT_AGENTS = [
@@ -121,6 +124,34 @@ const DEFAULT_AGENTS = [
   },
 ];
 
+// ═══════════════════════════════════════════════════════
+// 🔒 原子写入队列：防止并发写入导致 JSON 文件破损
+//    每个文件独立串行队列，先写 .tmp 再 rename（原子操作）
+// ═══════════════════════════════════════════════════════
+const writeQueues = new Map<string, Promise<void>>();
+
+async function atomicWriteJSON(filePath: string, data: any): Promise<void> {
+  const tmpPath = filePath + ".tmp";
+  const content = JSON.stringify(data, null, 2);
+  await fs.promises.writeFile(tmpPath, content, "utf-8");
+  await fs.promises.rename(tmpPath, filePath);
+}
+
+function enqueueWrite(filePath: string, data: any): Promise<void> {
+  const prev = writeQueues.get(filePath) || Promise.resolve();
+  // 前一个写入无论成败都继续处理当前（避免死锁）
+  const next = prev.then(
+    () => atomicWriteJSON(filePath, data),
+    () => atomicWriteJSON(filePath, data)
+  );
+  writeQueues.set(filePath, next);
+  // 吞掉 rejection 防止 unhandledRejection，错误已通过 console.error 记录
+  next.catch((err) => {
+    console.error(`Atomic write failed for ${filePath}:`, err);
+  });
+  return next;
+}
+
 // ── Agents 文件读写 ──
 function readAgents() {
   try {
@@ -133,12 +164,40 @@ function readAgents() {
   return DEFAULT_AGENTS;
 }
 
-function writeAgents(data: any) {
+function writeAgents(data: any): Promise<void> {
+  return enqueueWrite(AGENTS_FILE, data);
+}
+
+// ── 会话重命名映射持久化 ──
+function readRenameMap(): Record<string, string> {
   try {
-    fs.writeFileSync(AGENTS_FILE, JSON.stringify(data, null, 2), "utf-8");
+    if (fs.existsSync(RENAME_MAP_FILE)) {
+      return JSON.parse(fs.readFileSync(RENAME_MAP_FILE, "utf-8"));
+    }
   } catch (err) {
-    console.error("Error writing agents file:", err);
+    console.error("Error reading rename map:", err);
   }
+  return {};
+}
+
+function writeRenameMap(map: Record<string, string>): Promise<void> {
+  return enqueueWrite(RENAME_MAP_FILE, map);
+}
+
+// ── Hermes 本地会话历史持久化 ──
+function readHistory(): any[] {
+  try {
+    if (fs.existsSync(HISTORY_FILE)) {
+      return JSON.parse(fs.readFileSync(HISTORY_FILE, "utf-8"));
+    }
+  } catch (err) {
+    console.error("Error reading history:", err);
+  }
+  return [];
+}
+
+function writeHistory(sessions: any[]): Promise<void> {
+  return enqueueWrite(HISTORY_FILE, sessions);
 }
 
 // ── CORS ──
@@ -222,6 +281,12 @@ app.get("/api/sessions", async (req, res) => {
       const key = s.key || "";
       return !key.includes(":subagent:") && !key.includes(":cron:");
     });
+    // 应用本地重命名覆盖
+    const renameMap = readRenameMap();
+    sessions = sessions.map((s: any) => ({
+      ...s,
+      displayName: renameMap[s.key] || s.label || s.displayName || "未命名会话",
+    }));
     res.json(sessions);
   } catch (err: any) {
     console.error("Gateway sessions_list error:", err.message);
@@ -245,18 +310,50 @@ app.get("/api/sessions/:sessionKey/history", async (req, res) => {
   }
 });
 
+// ── 会话重命名：持久化到本地 rename-map.json ──
+app.patch("/api/sessions/:sessionKey/rename", async (req, res) => {
+  const { sessionKey } = req.params;
+  const { title } = req.body;
+  if (!sessionKey || !title) {
+    return res.status(400).json({ error: "Missing sessionKey or title" });
+  }
+  const map = readRenameMap();
+  map[decodeURIComponent(sessionKey)] = title;
+  await writeRenameMap(map);
+  res.json({ success: true, sessionKey, title });
+});
+
+// ── Hermes 本地会话历史 CRUD ──
+app.get("/api/history", (_req, res) => {
+  res.json(readHistory());
+});
+
+app.post("/api/history", async (req, res) => {
+  const session = req.body;
+  if (!session.id) return res.status(400).json({ error: "Missing session id" });
+  let history = readHistory();
+  const idx = history.findIndex((s: any) => s.id === session.id);
+  if (idx >= 0) {
+    history[idx] = session;
+  } else {
+    history.push(session);
+  }
+  await writeHistory(history);
+  res.json({ success: true });
+});
+
 // ── Agents CRUD ──
 app.get("/api/agents", (_req, res) => {
   res.json(readAgents());
 });
 
-app.post("/api/agents", (req, res) => {
+app.post("/api/agents", async (req, res) => {
   const agent = req.body;
   if (!agent.id) agent.id = "agent-" + Date.now();
   const agents = readAgents();
   agent.createdAt = new Date().toISOString();
   agents.push(agent);
-  writeAgents(agents);
+  await writeAgents(agents);
   res.json(agent);
 });
 
@@ -267,7 +364,7 @@ app.get("/api/agents/:id", (req, res) => {
   res.json(agent);
 });
 
-app.patch("/api/agents/:id", (req, res) => {
+app.patch("/api/agents/:id", async (req, res) => {
   let agents = readAgents();
   const idx = agents.findIndex((a: any) => a.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: "Not found" });
@@ -284,23 +381,23 @@ app.patch("/api/agents/:id", (req, res) => {
   if (updates.description) agents[idx].description = updates.description;
   if (updates.color) agents[idx].color = updates.color;
 
-  writeAgents(agents);
+  await writeAgents(agents);
   res.json(agents[idx]);
 });
 
-app.delete("/api/agents/:id", (req, res) => {
+app.delete("/api/agents/:id", async (req, res) => {
   let agents = readAgents();
   agents = agents.filter((a: any) => a.id !== req.params.id);
-  writeAgents(agents);
+  await writeAgents(agents);
   res.json({ success: true });
 });
 
-app.post("/api/agents/:id/activate", (req, res) => {
+app.post("/api/agents/:id/activate", async (req, res) => {
   let agents = readAgents();
   const idx = agents.findIndex((a: any) => a.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: "Not found" });
   agents[idx].active = true;
-  writeAgents(agents);
+  await writeAgents(agents);
   res.json(agents[idx]);
 });
 
