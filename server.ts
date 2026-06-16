@@ -294,16 +294,63 @@ app.get("/api/sessions", async (req, res) => {
   }
 });
 
-// GET /api/sessions/:sessionKey/history — 拉取指定会话聊天记录
+// GET /api/sessions/:sessionKey/history — 分页拉取 Gateway 会话聊天记录
+//   ?before=<msgId>  游标：返回该消息之前的更早记录（首次不传=返回最新N条）
+//   ?limit=20        每页条数，默认20，最大100
 app.get("/api/sessions/:sessionKey/history", async (req, res) => {
   try {
     const { sessionKey } = req.params;
     if (!sessionKey) return res.status(400).json({ error: "Missing sessionKey" });
+    const before = req.query.before as string | undefined;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+
+    // 从 Gateway 拉取全部消息（Gateway 暂不支持原生分页游标，服务端切片）
     const result = await gatewayInvoke("sessions_history", {
       sessionKey: decodeURIComponent(sessionKey),
     });
-    const messages = result?.messages || (Array.isArray(result) ? result : []);
-    res.json(messages);
+    const rawMessages: any[] = result?.messages || (Array.isArray(result) ? result : []);
+
+    // 标准化消息 ID：Gateway 消息 ID 在 __openclaw.id / responseId / id 中
+    const allMessages = rawMessages.map((m: any, i: number) => ({
+      ...m,
+      _cursorId: m.id || m.__openclaw?.id || m.responseId || `gw-msg-${i}`,
+    }));
+
+    if (allMessages.length === 0) {
+      return res.json({ messages: [], hasMore: false, nextBefore: null, total: 0 });
+    }
+
+    let sliced: any[];
+    let hasMore: boolean;
+    let nextBefore: string | null;
+
+    if (before) {
+      const beforeIdx = allMessages.findIndex((m: any) => m._cursorId === before);
+      if (beforeIdx <= 0) {
+        sliced = [];
+        hasMore = false;
+        nextBefore = null;
+      } else {
+        const start = Math.max(0, beforeIdx - limit);
+        sliced = allMessages.slice(start, beforeIdx);
+        hasMore = start > 0;
+        nextBefore = hasMore ? allMessages[start]?._cursorId || null : null;
+      }
+    } else {
+      sliced = allMessages.slice(-limit);
+      hasMore = allMessages.length > limit;
+      nextBefore = hasMore ? allMessages[allMessages.length - limit]?._cursorId || null : null;
+    }
+
+    // 返回时去掉内部 _cursorId 字段
+    const cleanMessages = sliced.map(({ _cursorId, ...rest }: any) => rest);
+
+    res.json({
+      messages: cleanMessages,
+      hasMore,
+      nextBefore,
+      total: allMessages.length,
+    });
   } catch (err: any) {
     console.error("Gateway sessions_history error:", err.message);
     res.status(502).json({ error: "Gateway history unreachable: " + (err.message || err) });
@@ -324,19 +371,88 @@ app.patch("/api/sessions/:sessionKey/rename", async (req, res) => {
 });
 
 // ── Hermes 本地会话历史 CRUD ──
+
+// GET /api/history — 返回会话列表（仅元数据，不含消息体）
 app.get("/api/history", (_req, res) => {
-  res.json(readHistory());
+  const history = readHistory();
+  const sessionsMeta = history.map((s: any) => ({
+    id: s.id,
+    title: s.title,
+    createdAt: s.createdAt,
+    agentId: s.agentId || "hermes",
+    messageCount: (s.messages || []).length,
+  }));
+  res.json(sessionsMeta);
+});
+
+// GET /api/history/:sessionId/messages — 分页拉取 Hermes 本地会话消息
+//   ?before=<msgId>  游标：返回该消息之前的更早记录（首次不传=返回最新N条）
+//   ?limit=20        每页条数，默认20，最大100
+app.get("/api/history/:sessionId/messages", (req, res) => {
+  const { sessionId } = req.params;
+  const before = req.query.before as string | undefined;
+  const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+
+  const history = readHistory();
+  const session = history.find((s: any) => s.id === sessionId);
+  if (!session) {
+    return res.status(404).json({ error: "Session not found" });
+  }
+
+  const messages: any[] = session.messages || [];
+  if (messages.length === 0) {
+    return res.json({ messages: [], hasMore: false, nextBefore: null, total: 0 });
+  }
+
+  let sliced: any[];
+  let hasMore: boolean;
+  let nextBefore: string | null;
+
+  if (before) {
+    const beforeIdx = messages.findIndex((m: any) => m.id === before);
+    if (beforeIdx <= 0) {
+      // before 是第一条或没找到 → 没有更早的消息
+      sliced = [];
+      hasMore = false;
+      nextBefore = null;
+    } else {
+      const start = Math.max(0, beforeIdx - limit);
+      sliced = messages.slice(start, beforeIdx);
+      hasMore = start > 0;
+      nextBefore = hasMore ? messages[start]?.id || null : null;
+    }
+  } else {
+    // 首次加载：返回最新 N 条
+    sliced = messages.slice(-limit);
+    hasMore = messages.length > limit;
+    nextBefore = hasMore ? messages[messages.length - limit]?.id || null : null;
+  }
+
+  res.json({
+    messages: sliced,
+    hasMore,
+    nextBefore,
+    total: messages.length,
+  });
 });
 
 app.post("/api/history", async (req, res) => {
-  const session = req.body;
-  if (!session.id) return res.status(400).json({ error: "Missing session id" });
+  const incoming = req.body;
+  if (!incoming.id) return res.status(400).json({ error: "Missing session id" });
   let history = readHistory();
-  const idx = history.findIndex((s: any) => s.id === session.id);
+  const idx = history.findIndex((s: any) => s.id === incoming.id);
+
   if (idx >= 0) {
-    history[idx] = session;
+    // 🔒 合并模式：保留服务端已有消息，仅追加前端新消息（按 id 去重）
+    const existing = history[idx];
+    const existingIds = new Set((existing.messages || []).map((m: any) => m.id));
+    const newMessages = (incoming.messages || []).filter((m: any) => !existingIds.has(m.id));
+    existing.title = incoming.title || existing.title;
+    existing.agentId = incoming.agentId || existing.agentId;
+    existing.messages = [...(existing.messages || []), ...newMessages];
+    existing.createdAt = existing.createdAt || incoming.createdAt;
   } else {
-    history.push(session);
+    history.push(incoming);
   }
   await writeHistory(history);
   res.json({ success: true });

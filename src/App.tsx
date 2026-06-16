@@ -195,6 +195,14 @@ export default function App() {
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const topSentinelRef = useRef<HTMLDivElement>(null);
+
+  // 🔌 分页上滑加载：每个会话独立追踪游标 & 加载状态
+  const [pageStateMap, setPageStateMap] = useState<Record<string, {
+    hasMore: boolean;
+    nextBefore: string | null;
+    isLoadingOlder: boolean;
+  }>>({});
 
   // Load agents from backend
   useEffect(() => {
@@ -264,6 +272,32 @@ export default function App() {
     }
   }, [sessions, activeSessionId, isGenerating]);
 
+  // 🔌 上滑触顶侦测：IntersectionObserver 监听顶部哨兵锚点
+  useEffect(() => {
+    const sentinel = topSentinelRef.current;
+    const container = chatContainerRef.current;
+    if (!sentinel || !container || !activeSessionId) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          const pageState = pageStateMap[activeSessionId];
+          if (pageState?.hasMore && !pageState?.isLoadingOlder) {
+            loadOlderMessages(activeSessionId);
+          }
+        }
+      },
+      {
+        root: container,
+        rootMargin: "80px 0px 0px 0px", // 提前 80px 触发，更丝滑
+        threshold: 0.1,
+      },
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [activeSessionId, pageStateMap]);
+
   // 🔌 持久化穿透：从 Gateway + 本地 history.json 拉取真实会话列表
   useEffect(() => {
     const fetchAllSessions = async () => {
@@ -271,11 +305,18 @@ export default function App() {
         setSessionsLoading(true);
         let allSessions: ChatSession[] = [];
 
-        // ── 1. 本地 Hermes 会话 ──
+        // ── 1. 本地 Hermes 会话（仅元数据，消息体分页懒加载）──
         try {
           const historyRes = await fetchWithTimeout("/api/history", {}, 1200);
           if (historyRes.ok) {
-            const localSessions = await historyRes.json();
+            const localMeta = await historyRes.json();
+            const localSessions: ChatSession[] = localMeta.map((m: any) => ({
+              id: m.id,
+              title: m.title,
+              messages: [],  // 空数组，点击会话时懒加载
+              createdAt: m.createdAt,
+              agentId: m.agentId || "hermes",
+            }));
             allSessions = [...localSessions];
           }
         } catch (e) {
@@ -362,27 +403,25 @@ export default function App() {
       id.startsWith("agent:");
 
     if (isRemote) {
-      // 🔌 持久化穿透：每次点击都实时向 Gateway 拉取最新聊天记录
+      // 🔌 分页加载：首次仅拉取最新 20 条，后续上滑触发懒加载
       try {
         const res = await fetchWithTimeout(
-          `/api/sessions/${encodeURIComponent(id)}/history`,
+          `/api/sessions/${encodeURIComponent(id)}/history?limit=20`,
           {},
-          2000
+          3000
         );
         if (res.ok) {
-          const history = await res.json();
-          const rawMessages = Array.isArray(history) ? history : [];
+          const data = await res.json();
+          const rawMessages = data.messages || [];
           const mappedMessages: Message[] = rawMessages.map((item: any) => {
             let content = "";
             const rawContent = item?.content;
-
             if (typeof rawContent === "string") {
               content = rawContent;
             } else if (Array.isArray(rawContent) && rawContent.length > 0) {
               const textBlocks = rawContent
                 .filter((b: any) => b?.type === "text" && b?.text)
                 .map((b: any) => b.text);
-
               if (textBlocks.length > 0) {
                 content = textBlocks.join("\n");
               } else {
@@ -391,10 +430,7 @@ export default function App() {
                   .map((b: any) => b.thinking);
                 if (thinkingBlocks.length > 0) {
                   const combined = thinkingBlocks.join(" ");
-                  content =
-                    combined.length > 200
-                      ? "💭 " + combined.slice(0, 200) + "…"
-                      : "💭 " + combined;
+                  content = combined.length > 200 ? "💭 " + combined.slice(0, 200) + "…" : "💭 " + combined;
                 } else {
                   const toolBlocks = rawContent
                     .filter((b: any) => b?.type === "toolCall" && b?.name)
@@ -403,33 +439,58 @@ export default function App() {
                 }
               }
             }
-
             const ts = item?.timestamp;
-            const timeStr = ts
-              ? new Date(ts).toLocaleTimeString("zh-CN", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })
-              : "";
-
             return {
-              id:
-                item?.id ||
-                `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              id: item?.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
               role: item?.role === "assistant" ? "assistant" : "user",
               content: content || "",
-              timestamp: timeStr,
+              timestamp: ts
+                ? new Date(ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
+                : "",
             };
           });
 
           setSessions((prev) =>
-            prev.map((s) =>
-              s.id === id ? { ...s, messages: mappedMessages } : s,
-            ),
+            prev.map((s) => (s.id === id ? { ...s, messages: mappedMessages } : s)),
           );
+
+          // 建立分页游标状态
+          setPageStateMap((prev) => ({
+            ...prev,
+            [id]: {
+              hasMore: data.hasMore ?? false,
+              nextBefore: data.nextBefore ?? null,
+              isLoadingOlder: false,
+            },
+          }));
         }
       } catch (err) {
         console.error("Failed to fetch session history:", err);
+      }
+    } else {
+      // Hermes 本地会话：分页加载首屏消息
+      try {
+        const res = await fetchWithTimeout(
+          `/api/history/${encodeURIComponent(id)}/messages?limit=20`,
+          {},
+          1500
+        );
+        if (res.ok) {
+          const data = await res.json();
+          setSessions((prev) =>
+            prev.map((s) => (s.id === id ? { ...s, messages: data.messages || [] } : s)),
+          );
+          setPageStateMap((prev) => ({
+            ...prev,
+            [id]: {
+              hasMore: data.hasMore ?? false,
+              nextBefore: data.nextBefore ?? null,
+              isLoadingOlder: false,
+            },
+          }));
+        }
+      } catch (err) {
+        console.error("Failed to load local messages:", err);
       }
     }
     setIsSessionLoading(false);
@@ -528,6 +589,130 @@ export default function App() {
       });
     } catch (err) {
       console.error("Failed to sync local session:", err);
+    }
+  };
+
+  // 🔌 上滑加载更早消息（含滚动高度补偿，禁止跳动）
+  const loadOlderMessages = async (sessionId: string) => {
+    const pageState = pageStateMap[sessionId];
+    if (!pageState?.hasMore || pageState?.isLoadingOlder) return;
+
+    const sess = sessions.find((s) => s.id === sessionId);
+    if (!sess) return;
+
+    const isRemote =
+      AGENTS[sess.agentId || "hermes"]?.runtime === "openclaw" ||
+      sessionId.startsWith("agent:");
+
+    // 标记加载中
+    setPageStateMap((prev) => ({
+      ...prev,
+      [sessionId]: { ...prev[sessionId], isLoadingOlder: true },
+    }));
+
+    // 📐 滚动补偿：记录当前 scrollHeight（DOM 更新前）
+    const container = chatContainerRef.current;
+    const prevScrollHeight = container?.scrollHeight || 0;
+
+    try {
+      let url: string;
+      if (isRemote) {
+        url = `/api/sessions/${encodeURIComponent(sessionId)}/history?limit=20`;
+      } else {
+        url = `/api/history/${encodeURIComponent(sessionId)}/messages?limit=20`;
+      }
+      if (pageState.nextBefore) {
+        url += `&before=${encodeURIComponent(pageState.nextBefore)}`;
+      }
+
+      const res = await fetchWithTimeout(url, {}, isRemote ? 3000 : 1500);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const data = await res.json();
+      const rawMessages: any[] = data.messages || [];
+
+      if (rawMessages.length === 0) {
+        setPageStateMap((prev) => ({
+          ...prev,
+          [sessionId]: { ...prev[sessionId], hasMore: false, isLoadingOlder: false },
+        }));
+        return;
+      }
+
+      // 映射消息格式（Gateway 消息需转换）
+      let newMessages: Message[];
+      if (isRemote) {
+        newMessages = rawMessages.map((item: any) => {
+          let content = "";
+          const rawContent = item?.content;
+          if (typeof rawContent === "string") {
+            content = rawContent;
+          } else if (Array.isArray(rawContent) && rawContent.length > 0) {
+            const textBlocks = rawContent
+              .filter((b: any) => b?.type === "text" && b?.text)
+              .map((b: any) => b.text);
+            if (textBlocks.length > 0) {
+              content = textBlocks.join("\n");
+            } else {
+              const thinkingBlocks = rawContent
+                .filter((b: any) => b?.type === "thinking" && b?.thinking)
+                .map((b: any) => b.thinking);
+              if (thinkingBlocks.length > 0) {
+                const combined = thinkingBlocks.join(" ");
+                content = combined.length > 200 ? "💭 " + combined.slice(0, 200) + "…" : "💭 " + combined;
+              } else {
+                const toolBlocks = rawContent
+                  .filter((b: any) => b?.type === "toolCall" && b?.name)
+                  .map((b: any) => `🔧 ${b.name}`);
+                content = toolBlocks.join(", ");
+              }
+            }
+          }
+          const ts = item?.timestamp;
+          return {
+            id: item?.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            role: item?.role === "assistant" ? "assistant" : "user",
+            content: content || "",
+            timestamp: ts
+              ? new Date(ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
+              : "",
+          };
+        });
+      } else {
+        newMessages = rawMessages;
+      }
+
+      // unshift 旧消息到头部
+      setSessions((prev) =>
+        prev.map((s) => {
+          if (s.id !== sessionId) return s;
+          return { ...s, messages: [...newMessages, ...s.messages] };
+        }),
+      );
+
+      // 📐 滚动补偿：DOM 更新后修正 scrollTop，禁止跳动
+      requestAnimationFrame(() => {
+        if (container) {
+          const newScrollHeight = container.scrollHeight;
+          const heightAdded = newScrollHeight - prevScrollHeight;
+          container.scrollTop += heightAdded;
+        }
+      });
+
+      setPageStateMap((prev) => ({
+        ...prev,
+        [sessionId]: {
+          hasMore: data.hasMore ?? false,
+          nextBefore: data.nextBefore ?? null,
+          isLoadingOlder: false,
+        },
+      }));
+    } catch (err: any) {
+      console.error("loadOlderMessages failed:", err);
+      setPageStateMap((prev) => ({
+        ...prev,
+        [sessionId]: { ...prev[sessionId], isLoadingOlder: false },
+      }));
     }
   };
 
@@ -1094,6 +1279,18 @@ export default function App() {
                     </div>
                   ) : (
                     <div className="space-y-6 flex-1 flex flex-col pb-20 w-full">
+                      {/* 🔌 上滑加载指示器 + 顶部哨兵锚点 */}
+                      <div
+                        ref={topSentinelRef}
+                        className="h-1 w-full shrink-0"
+                        aria-hidden="true"
+                      />
+                      {pageStateMap[activeSessionId || ""]?.isLoadingOlder && (
+                        <div className="flex items-center justify-center gap-2 py-3 text-zinc-400 select-none">
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span className="text-[11px] font-mono tracking-wide">加载更早的记录…</span>
+                        </div>
+                      )}
                       <AnimatePresence initial={false}>
                         {activeSession?.messages.map((msg, idx) => {
                           const isUser = msg.role === "user";
