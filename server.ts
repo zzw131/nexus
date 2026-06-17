@@ -262,6 +262,209 @@ function gatewayInvoke(tool: string, args: Record<string, any> = {}): Promise<an
 }
 
 // ═══════════════════════════════════════════════════════
+// 🛡️ 自动重试防线 · Agent 自愈机制
+//    拦截空内容/中断标识 → 后台默默重跑 → 优雅降级
+// ═══════════════════════════════════════════════════════
+const AUTO_RETRY_MAX = 2;
+
+/** 空内容/中断标识匹配模式 */
+const CONTENT_CRASH_PATTERNS: RegExp[] = [
+  /completed without visible content/i,
+  /no content generated/i,
+  /empty response/i,
+];
+
+/**
+ * 判断一组 SSE 事件中是否存在有效的 Agent 输出内容
+ * 有效输出 = 有 delta.content 文本 或 有 tool_calls 调用
+ */
+function hasValidOutput(events: string[]): boolean {
+  for (const event of events) {
+    const lines = event.split("\n");
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data: ")) continue;
+      const dataStr = trimmed.slice(6);
+      if (dataStr === "[DONE]") continue;
+      try {
+        const parsed = JSON.parse(dataStr);
+        const content = parsed.choices?.[0]?.delta?.content;
+        if (content && typeof content === "string" && content.trim().length > 0) {
+          return true;
+        }
+        const toolCalls = parsed.choices?.[0]?.delta?.tool_calls;
+        if (toolCalls && Array.isArray(toolCalls) && toolCalls.length > 0) {
+          return true;
+        }
+      } catch {}
+    }
+  }
+  return false;
+}
+
+/**
+ * 检测 SSE 事件流中是否包含崩溃/中断标识
+ */
+function containsCrashPattern(events: string[]): boolean {
+  const combined = events.join(" ");
+  return CONTENT_CRASH_PATTERNS.some((p) => p.test(combined));
+}
+
+/**
+ * 生成优雅降级 SSE 事件（中文报错，符合产品视觉红线）
+ */
+function gracefulDegradationEvents(): string[] {
+  return [
+    `data: ${JSON.stringify({
+      choices: [{ delta: { content: "⚠️ 节点机底层推演中断，已尝试自愈失败，请尝试简化指令或重新发送。" } }],
+    })}\n\n`,
+    "data: [DONE]\n\n",
+  ];
+}
+
+/**
+ * 单次 Gateway 流式代理：收集全部 SSE 事件（不落盘到 res，供重试调度用）
+ */
+function gatewayStreamOnce(
+  postData: string,
+  reqHeaders: Record<string, string>
+): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const events: string[] = [];
+    const oreq = http.request(
+      {
+        hostname: GATEWAY_HOST,
+        port: GATEWAY_PORT,
+        path: GATEWAY_CHAT_PATH,
+        method: "POST",
+        headers: reqHeaders,
+        timeout: 300000,
+      },
+      (ores) => {
+        if ((ores.statusCode || 500) >= 400) {
+          let errorData = "";
+          ores.on("data", (chunk: Buffer) => { errorData += chunk.toString(); });
+          ores.on("end", () => {
+            reject(new Error(`Gateway error ${ores.statusCode}: ${errorData}`));
+          });
+          return;
+        }
+
+        let sseBuf = "";
+        ores.on("data", (chunk: Buffer) => {
+          sseBuf += chunk.toString();
+          while (true) {
+            const idx = sseBuf.indexOf("\n\n");
+            if (idx === -1) break;
+            const rawEvent = sseBuf.slice(0, idx + 2);
+            sseBuf = sseBuf.slice(idx + 2);
+            events.push(rawEvent);
+          }
+        });
+
+        ores.on("end", () => {
+          if (sseBuf.length > 0) events.push(sseBuf);
+          resolve(events);
+        });
+
+        ores.on("error", (err: Error) => reject(err));
+      }
+    );
+
+    oreq.on("error", (err: any) => reject(err));
+    oreq.on("timeout", () => {
+      oreq.destroy();
+      reject(new Error("Gateway timeout"));
+    });
+    oreq.write(postData);
+    oreq.end();
+  });
+}
+
+/**
+ * tool_calls → agent_log 注入（后处理版本）
+ */
+function injectAgentLogs(events: string[]): string[] {
+  const result: string[] = [];
+  for (const rawEvent of events) {
+    result.push(rawEvent);
+    const lines = rawEvent.split("\n");
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data: ")) continue;
+      const dataStr = trimmed.slice(6);
+      if (dataStr === "[DONE]") continue;
+      try {
+        const parsed = JSON.parse(dataStr);
+        const toolCalls = parsed.choices?.[0]?.delta?.tool_calls;
+        if (toolCalls && Array.isArray(toolCalls)) {
+          for (const tc of toolCalls) {
+            const fnName = tc.function?.name || "unknown";
+            let logText = `[Tool] 执行了 ${fnName}`;
+            const argsStr = tc.function?.arguments;
+            if (argsStr) {
+              try {
+                const args = JSON.parse(argsStr);
+                if (args.path) logText += ` → ${args.path}`;
+                else if (args.command) logText += ` → ${args.command.slice(0, 60)}`;
+                else if (args.query) logText += ` → ${args.query.slice(0, 60)}`;
+                else if (args.filePath) logText += ` → ${args.filePath}`;
+              } catch {}
+            }
+            result.push(
+              `data: ${JSON.stringify({ agent_log: logText })}\n\n`
+            );
+          }
+        }
+      } catch {}
+    }
+  }
+  return result;
+}
+
+/**
+ * 🛡️ Gateway 流式代理 + 自动重试防线
+ * ── 拦截空内容/中断标识 → 后台默默重跑（最多 AUTO_RETRY_MAX 次）
+ * ── 全部失败 → 优雅降级中文报错
+ */
+async function gatewayChatWithRetry(
+  postData: string,
+  reqHeaders: Record<string, string>
+): Promise<string[]> {
+  for (let attempt = 0; attempt <= AUTO_RETRY_MAX; attempt++) {
+    try {
+      const rawEvents = await gatewayStreamOnce(postData, reqHeaders);
+      const enrichedEvents = injectAgentLogs(rawEvents);
+
+      if (hasValidOutput(enrichedEvents) && !containsCrashPattern(enrichedEvents)) {
+        if (attempt > 0) {
+          console.log(`✅ [Auto-Retry] 第 ${attempt} 次重试成功恢复`);
+        }
+        return enrichedEvents;
+      }
+
+      console.warn(
+        `⚠️ [Auto-Retry] 第 ${attempt + 1}/${AUTO_RETRY_MAX} 次：检测到空内容或中断标识，触发重试`
+      );
+    } catch (err: any) {
+      console.error(
+        `⚠️ [Auto-Retry] 第 ${attempt + 1}/${AUTO_RETRY_MAX} 次异常:`,
+        err.message
+      );
+    }
+
+    if (attempt < AUTO_RETRY_MAX) {
+      // 短暂退避后重试，避免瞬时冲击
+      await new Promise((r) => setTimeout(r, 800));
+    }
+  }
+
+  // 所有重试耗尽 → 优雅降级
+  console.error("🛑 [Auto-Retry] 全部重试耗尽，返回优雅降级提示");
+  return gracefulDegradationEvents();
+}
+
+// ═══════════════════════════════════════════════════════
 // 核心 API 1: 会话同步与历史记录
 // ═══════════════════════════════════════════════════════
 
@@ -601,7 +804,7 @@ app.post("/api/chat", async (req, res, next) => {
       hreq.end();
 
     } else {
-      // ── OpenClaw Gateway 代理（含 agent_log 拦截）──
+      // ── OpenClaw Gateway 代理（🛡️ 自动重试防线包裹）──
       const modelMap: Record<string, string> = {
         "openclaw-main": "openclaw/main",
         "openclaw-jianshen": "openclaw/jianshen",
@@ -624,107 +827,21 @@ app.post("/api/chat", async (req, res, next) => {
         reqHeaders["x-openclaw-session-key"] = session_id;
       }
 
-      const oreq = http.request(
-        {
-          hostname: GATEWAY_HOST,
-          port: GATEWAY_PORT,
-          path: GATEWAY_CHAT_PATH,
-          method: "POST",
-          headers: reqHeaders,
-          timeout: 300000,
-        },
-        (ores) => {
-          if ((ores.statusCode || 500) >= 400) {
-            let errorData = "";
-            ores.on("data", (chunk: Buffer) => { errorData += chunk.toString(); });
-            ores.on("end", () => {
-              res.write(`data: ${JSON.stringify({ error: `Gateway error ${ores.statusCode}: ${errorData}` })}\n\n`);
-              res.end();
-            });
-            return;
-          }
-
-          // ═══════════════════════════════════════════
-          // 🔥 大动脉流式拦截：解析每条 SSE 事件
-          //    检测 tool_calls → 注入 agent_log
-          //    原始数据一字不改透传
-          // ═══════════════════════════════════════════
-          let sseBuf = "";
-
-          ores.on("data", (chunk: Buffer) => {
-            sseBuf += chunk.toString();
-
-            // 按 \n\n 切割完整 SSE 事件
-            while (true) {
-              const idx = sseBuf.indexOf("\n\n");
-              if (idx === -1) break;
-
-              const rawEvent = sseBuf.slice(0, idx + 2); // 含 \n\n
-              sseBuf = sseBuf.slice(idx + 2);
-
-              // ① 原始事件一字不改透传
-              res.write(rawEvent);
-
-              // ② 检查是否包含 tool_calls → 生成 agent_log
-              const lines = rawEvent.split("\n");
-              for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed.startsWith("data: ")) continue;
-                const dataStr = trimmed.slice(6);
-                if (dataStr === "[DONE]") continue;
-
-                try {
-                  const parsed = JSON.parse(dataStr);
-                  const toolCalls = parsed.choices?.[0]?.delta?.tool_calls;
-                  if (toolCalls && Array.isArray(toolCalls)) {
-                    for (const tc of toolCalls) {
-                      const fnName = tc.function?.name || "unknown";
-                      let logText = `[Tool] 执行了 ${fnName}`;
-
-                      // 提取参数摘要
-                      const argsStr = tc.function?.arguments;
-                      if (argsStr) {
-                        try {
-                          const args = JSON.parse(argsStr);
-                          if (args.path) logText += ` → ${args.path}`;
-                          else if (args.command) logText += ` → ${args.command.slice(0, 60)}`;
-                          else if (args.query) logText += ` → ${args.query.slice(0, 60)}`;
-                          else if (args.filePath) logText += ` → ${args.filePath}`;
-                        } catch {}
-                      }
-
-                      const agentLogEvent = `data: ${JSON.stringify({ agent_log: logText })}\n\n`;
-                      res.write(agentLogEvent);
-                    }
-                  }
-                } catch {}
-              }
-            }
-          });
-
-          ores.on("end", () => {
-            // 处理尾部残余
-            if (sseBuf.length > 0) {
-              res.write(sseBuf);
-            }
-            res.end();
-          });
-
-          ores.on("error", (err: Error) => {
-            console.error("OpenClaw stream pipe error:", err);
-            if (!res.writableEnded) res.end();
-          });
-        },
-      );
-
-      oreq.on("error", (err: any) => {
-        console.error("OpenClaw request error:", err.message);
-        res.write(`data: ${JSON.stringify({ error: `Gateway unreachable: ${err.message}` })}\n\n`);
-        res.end();
-      });
-      oreq.on("timeout", () => { oreq.destroy(); res.end(); });
-      oreq.write(postData);
-      oreq.end();
+      // 🛡️ 自动重试防线：拦截空内容 → 后台重跑 → 优雅降级
+      try {
+        const events = await gatewayChatWithRetry(postData, reqHeaders);
+        for (const evt of events) {
+          res.write(evt);
+        }
+      } catch (err: any) {
+        console.error("gatewayChatWithRetry fatal:", err.message);
+        res.write(
+          `data: ${JSON.stringify({
+            error: `Gateway unreachable: ${err.message}`,
+          })}\n\n`
+        );
+      }
+      res.end();
     }
   } catch (err: any) {
     console.error("Chat proxy fatal:", err?.message || err);
