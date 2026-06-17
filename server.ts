@@ -493,7 +493,8 @@ app.get("/api/sessions", async (req, res) => {
     res.json(sessions);
   } catch (err: any) {
     console.error("Gateway sessions_list error:", err.message);
-    res.status(502).json({ error: "Gateway sessions unreachable: " + (err.message || err) });
+    // 🛡️ 优雅降级：Gateway 不可达时返回空列表，避免 AbortError 拖垮前端
+    res.json([]);
   }
 });
 
@@ -575,16 +576,22 @@ app.patch("/api/sessions/:sessionKey/rename", async (req, res) => {
 
 // ── Hermes 本地会话历史 CRUD ──
 
-// GET /api/history — 返回会话列表（仅元数据，不含消息体）
+// GET /api/history — 返回纯本地 Hermes 会话列表（过滤 Gateway 体系数据，从源头隔离）
 app.get("/api/history", (_req, res) => {
   const history = readHistory();
-  const sessionsMeta = history.map((s: any) => ({
-    id: s.id,
-    title: s.title,
-    createdAt: s.createdAt,
-    agentId: s.agentId || "hermes",
-    messageCount: (s.messages || []).length,
-  }));
+  const sessionsMeta = history
+    .filter((s: any) => {
+      const aid = s.agentId || "hermes";
+      // 排除 Gateway 体系会话（openclaw-*），只保留纯本地 Hermes 会话
+      return !aid.startsWith("openclaw-");
+    })
+    .map((s: any) => ({
+      id: s.id,
+      title: s.title,
+      createdAt: s.createdAt,
+      agentId: s.agentId || "hermes",
+      messageCount: (s.messages || []).length,
+    }));
   res.json(sessionsMeta);
 });
 

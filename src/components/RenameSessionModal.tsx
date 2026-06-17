@@ -5,6 +5,7 @@ import { PencilLine } from "lucide-react";
 
 interface RenameSessionModalProps {
   open: boolean;
+  sessionId?: string;
   currentName: string;
   onConfirm: (newName: string) => void;
   onClose: () => void;
@@ -12,6 +13,7 @@ interface RenameSessionModalProps {
 
 export function RenameSessionModal({
   open,
+  sessionId,
   currentName,
   onConfirm,
   onClose,
@@ -104,6 +106,11 @@ export function RenameSessionModal({
                   placeholder="输入会话名称"
                   className="w-full px-5 py-3.5 bg-white/60 dark:bg-zinc-800/60 backdrop-blur-lg border border-white/80 dark:border-zinc-700/80 rounded-full text-zinc-900 dark:text-zinc-100 font-medium placeholder-zinc-400 dark:placeholder-zinc-500 shadow-sm focus:outline-none focus:ring-2 focus:ring-zinc-500/20 dark:focus:ring-white/20 transition-all font-sans"
                 />
+                {sessionId && (
+                  <p className="mt-1.5 text-[10px] text-gray-400/50 dark:text-gray-500/40 font-mono truncate px-2 text-center select-all">
+                    {sessionId}
+                  </p>
+                )}
               </div>
 
               <div className="flex items-center justify-between w-full gap-3">

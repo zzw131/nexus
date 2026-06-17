@@ -303,53 +303,54 @@ export default function App() {
     const fetchAllSessions = async () => {
       try {
         setSessionsLoading(true);
-        let allSessions: ChatSession[] = [];
+        // 🛡️ Map-based 去重合并：以 session.id 为唯一键，Gateway 数据优先级覆写
+        const sessionMap = new Map<string, ChatSession>();
 
         // ── 1. 本地 Hermes 会话（仅元数据，消息体分页懒加载）──
         try {
           const historyRes = await fetchWithTimeout("/api/history", {}, 1200);
           if (historyRes.ok) {
             const localMeta = await historyRes.json();
-            const localSessions: ChatSession[] = localMeta.map((m: any) => ({
-              id: m.id,
-              title: m.title,
-              messages: [],  // 空数组，点击会话时懒加载
-              createdAt: m.createdAt,
-              agentId: m.agentId || "hermes",
-            }));
-            allSessions = [...localSessions];
+            for (const m of localMeta) {
+              sessionMap.set(m.id, {
+                id: m.id,
+                title: m.title,
+                messages: [],
+                createdAt: m.createdAt,
+                agentId: m.agentId || "hermes",
+              });
+            }
           }
         } catch (e) {
           console.error("Local history unavailable:", e);
         }
 
-        // ── 2. OpenClaw 会话：从 Gateway 100% 实时拉取 ──
+        // ── 2. OpenClaw 会话：从 Gateway 100% 实时拉取 → 同 ID 强制覆写本地 ──
         try {
           const clawRes = await fetchWithTimeout("/api/sessions", {}, 2000);
           if (clawRes.ok) {
             const clawSessions = await clawRes.json();
-            const mappedClawSessions: ChatSession[] = clawSessions.map(
-              (cs: any) => {
-                let frontendAgentId = "openclaw-main";
-                if (cs.agentId === "jianshen")
-                  frontendAgentId = "openclaw-jianshen";
+            for (const cs of clawSessions) {
+              let frontendAgentId = "openclaw-main";
+              if (cs.agentId === "jianshen")
+                frontendAgentId = "openclaw-jianshen";
 
-                return {
-                  id: cs.key,
-                  title: cs.displayName || cs.label || "未命名会话",
-                  messages: [],
-                  createdAt: cs.updatedAt
-                    ? new Date(cs.updatedAt).toISOString()
-                    : new Date().toISOString(),
-                  agentId: frontendAgentId,
-                };
-              },
-            );
-            allSessions = [...allSessions, ...mappedClawSessions];
+              sessionMap.set(cs.key, {
+                id: cs.key,
+                title: cs.displayName || cs.label || "未命名会话",
+                messages: [],
+                createdAt: cs.updatedAt
+                  ? new Date(cs.updatedAt).toISOString()
+                  : new Date().toISOString(),
+                agentId: frontendAgentId,
+              });
+            }
           }
         } catch (clawErr) {
           console.error("Gateway sessions unreachable:", clawErr);
         }
+
+        const allSessions: ChatSession[] = Array.from(sessionMap.values());
 
         // ── 3. 排序：最新在前 ──
         allSessions.sort(
@@ -1411,7 +1412,7 @@ export default function App() {
                               AGENTS[currentAgentId]?.placeholder ||
                               !AGENTS[currentAgentId]?.active
                                 ? `${AGENTS[currentAgentId]?.alias} 尚未接入，无法发送消息`
-                                : `Describe an app and let Gemini do the rest`
+                                : `输入指令，或与 Zzw 进行对话…`
                             }
                             className="flex-1 resize-none bg-transparent py-1.5 text-[14px] leading-relaxed text-zinc-800 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:outline-none min-h-[24px]"
                             disabled={
@@ -1557,6 +1558,7 @@ export default function App() {
       {/* Rename Session Modal */}
       <RenameSessionModal
         open={renameModalState.open}
+        sessionId={renameModalState.sessionId}
         currentName={renameModalState.currentName}
         onConfirm={handleRenameConfirm}
         onClose={() => setRenameModalState((prev) => ({ ...prev, open: false }))}

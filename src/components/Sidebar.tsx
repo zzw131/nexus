@@ -174,6 +174,31 @@ export default function Sidebar({
           </div>
         </div>
 
+        {/* + 新建会话 · 极简入口 */}
+        <div className="px-4 pb-2">
+          <button
+            onClick={async () => {
+              if (creatingAgentId) return;
+              setCreatingAgentId(currentAgentId);
+              try {
+                await onCreateSession(currentAgentId);
+                setExpandedGroups((prev) => ({ ...prev, [currentAgentId]: true }));
+              } finally {
+                setCreatingAgentId(null);
+              }
+            }}
+            disabled={creatingAgentId !== null}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-[10px] text-[14px] font-medium text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-[#333538]/50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+          >
+            {creatingAgentId !== null ? (
+              <div className="w-3.5 h-3.5 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <Plus className="w-3.5 h-3.5" />
+            )}
+            <span>新建会话</span>
+          </button>
+        </div>
+
         <div className="flex-1 overflow-y-auto px-4 space-y-3 scrollbar-none pb-4">
           {allAgentsToRender.map((agent) => {
             const agentSessions = sessionsMap[agent.id] || [];
@@ -249,7 +274,7 @@ export default function Sidebar({
                     }}
                   >
                     <div className="space-y-0.5 mt-0.5 pl-3 ml-1.5 border-l border-zinc-200/80 dark:border-zinc-800/80">
-                      {agentSessions.map((sess, index) => {
+                      {agentSessions.map((sess) => {
                         const isActive = sess.id === activeSessionId;
                         return (
                           <div
@@ -263,14 +288,17 @@ export default function Sidebar({
                                 : "bg-transparent text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-zinc-200 dark:hover:bg-zinc-800/50 font-medium border border-transparent"
                             }`}
                           >
-                            <span
-                              className={`text-[13px] leading-normal font-sans truncate`}
-                            >
-                              {sess.title || "新对话"}
-                            </span>
+                            <div className="flex-1 min-w-0 overflow-hidden">
+                              <span className="text-[13px] leading-normal font-sans truncate block">
+                                {sess.title || "新对话"}
+                              </span>
+                              <span className="text-[10px] text-gray-400/60 dark:text-gray-500/50 truncate block font-mono leading-tight mt-0.5 select-all">
+                                {sess.id}
+                              </span>
+                            </div>
                             
                             {/* Edit Button (Visible on Hover) */}
-                            <div className={`transition-opacity ${isActive ? "opacity-100" : "opacity-0 group-hover/item:opacity-100"}`}>
+                            <div className={`shrink-0 ml-1.5 transition-opacity ${isActive ? "opacity-100" : "opacity-0 group-hover/item:opacity-100"}`}>
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
